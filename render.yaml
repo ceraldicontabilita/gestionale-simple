@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: gestionale
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: RENDER
+        value: "true"
+      - key: ADMIN_EMAIL
+        value: ceraldigroupsrl@gmail.com
+      - key: ADMIN_PASSWORD_HASH
+        generateValue: false
+        # Imposta manualmente il valore bcrypt su Render dashboard
+        # Genera con: python -c "import bcrypt; print(bcrypt.hashpw(b'TUAPASSWORD', bcrypt.gensalt()).decode())"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: MONGO_URI
+        sync: false
+        # Opzionale: stringa di connessione MongoDB Atlas
