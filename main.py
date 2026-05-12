@@ -32,16 +32,18 @@ SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production-use-a-long-random-
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
-MONGO_URI = os.getenv("MONGO_URI", "")  # opzionale
+MONGO_URL = os.getenv("MONGO_URL", "")
+DB_NAME   = os.getenv("DB_NAME", "Gestionale")
 
 # ── Database (opzionale) ──────────────────────────────────────────────────────
 
 db = None
-if MONGO_URI:
+if MONGO_URL:
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
-        _client = AsyncIOMotorClient(MONGO_URI)
-        db = _client.get_default_database()
+        _client = AsyncIOMotorClient(MONGO_URL)
+        db = _client[DB_NAME]
+        print(f"[INFO] MongoDB connesso: {DB_NAME}")
     except Exception as e:
         print(f"[WARN] MongoDB non disponibile: {e}")
 
