@@ -70,7 +70,7 @@ async def lista_fatture(
     totale = await col_invoices().count_documents(filtro)
 
     # Costruisci mappa piva→nome dai fornitori (ragione_sociale o campo legacy denominazione)
-    all_forn = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1, "denominazione": 1}).to_list(length=5000)
+    all_forn = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1, "denominazione": 1}).to_list(length=None)
     forn_map = {
         f["partita_iva"]: f.get("ragione_sociale") or f.get("denominazione") or ""
         for f in all_forn if f.get("partita_iva")
@@ -109,17 +109,25 @@ async def lista_fatture(
 
         d["fornitore_nome"] = nome
 
-    # Salva aggiornamenti nel DB
-    for doc_id, upd in to_update:
-        await col_invoices().update_one({"_id": doc_id}, {"$set": upd})
-
-    # Aggiorna ragione_sociale nei fornitori dove manca (incluso campo legacy denominazione)
-    for piva, nome in forn_map.items():
-        if nome:
-            await col_fornitori().update_one(
-                {"partita_iva": piva, "$or": [{"ragione_sociale": ""}, {"ragione_sociale": None}]},
-                {"$set": {"ragione_sociale": nome}}
-            )
+    # Salva aggiornamenti nel DB in background (non blocca la risposta)
+    import asyncio
+    async def _flush_updates():
+        for doc_id, upd in to_update:
+            try:
+                await col_invoices().update_one({"_id": doc_id}, {"$set": upd})
+            except Exception:
+                pass
+        for piva, nome in forn_map.items():
+            if nome:
+                try:
+                    await col_fornitori().update_one(
+                        {"partita_iva": piva, "$or": [{"ragione_sociale": ""}, {"ragione_sociale": None}]},
+                        {"$set": {"ragione_sociale": nome}}
+                    )
+                except Exception:
+                    pass
+    if to_update or any(forn_map.values()):
+        asyncio.create_task(_flush_updates())
 
     # KPI aggregati
     pipeline_kpi = [
