@@ -81,6 +81,21 @@ async def _migra_nomi_fornitori():
         print(f"⚠️  Migration nomi fornitori: {e}")
 
 
+async def _migra_corrispettivi():
+    """Imposta contanti=0 e elettronico=0 sui corrispettivi che non hanno questi campi."""
+    try:
+        from app.database import get_db
+        db = get_db()
+        result = await db["corrispettivi"].update_many(
+            {"$or": [{"contanti": {"$exists": False}}, {"contanti": None}]},
+            {"$set": {"contanti": 0.0, "elettronico": 0.0}},
+        )
+        if result.modified_count:
+            print(f"✅ Migration corrispettivi: aggiornati {result.modified_count} record (contanti/elettronico → 0)")
+    except Exception as e:
+        print(f"⚠️  Migration corrispettivi: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
@@ -90,6 +105,7 @@ async def lifespan(app: FastAPI):
         print("✅ MongoDB Atlas connesso")
         asyncio.create_task(_cleanup_fornitori_orphan())
         asyncio.create_task(_migra_nomi_fornitori())
+        asyncio.create_task(_migra_corrispettivi())
     except Exception as e:
         print(f"⚠️  MongoDB non raggiungibile: {e}")
     yield
