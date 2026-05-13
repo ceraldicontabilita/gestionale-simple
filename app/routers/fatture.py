@@ -1,425 +1,447 @@
 """
-Router Fatture — Ceraldi Group ERP
-CRUD fatture passive + import XML manuale + pagamento + scadenzario.
-Collection: 'invoices' (nome esistente nel DB)
+Router Fatture Ricevute — Ceraldi Group ERP
+Ciclo passivo completo: import XML/P7M, dedup, fornitore, prima nota, scadenziario.
+
+Regole fondamentali (da spec operativa):
+ 1. Metodo pagamento SEMPRE dall'anagrafica fornitore — mai dall'XML
+ 2. Dedup su: hash file AND (piva + numero + data)
+ 3. Fornitore cercato per piva, poi cf; se assente → creato automaticamente
+ 4. TD04/TD08 (note credito) → importi negativi
+ 5. Metodo non definito → stato "da_classificare" + alert
+ 6. Nessuna scrittura DB nelle chiamate GET
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Optional
+
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 from bson import ObjectId
 
 from app.routers.auth import verify_token
-from app.database import col_invoices, col_fornitori
+from app.database import (
+    col_invoices, col_fornitori,
+    col_pn_cassa, col_pn_banca, col_pn_provvisori,
+)
 from app.services.xml_parser import parse_file
 from app.services.prima_nota_auto import smista_fattura
 
 router = APIRouter(prefix="/api/fatture", tags=["fatture"])
 
 
-def _serialize(doc: dict) -> dict:
-    """Converte ObjectId e tipi non serializzabili in stringa."""
-    if doc is None:
+# ── Serializzazione ───────────────────────────────────────────────────────────
+
+def _ser(doc: dict) -> dict:
+    if not doc:
         return {}
     out = {}
     for k, v in doc.items():
         if isinstance(v, ObjectId):
             out[k] = str(v)
         elif isinstance(v, list):
-            out[k] = [_serialize(i) if isinstance(i, dict) else
-                      str(i) if isinstance(i, ObjectId) else i
-                      for i in v]
+            out[k] = [_ser(i) if isinstance(i, dict) else
+                      str(i) if isinstance(i, ObjectId) else i for i in v]
         elif isinstance(v, dict):
-            out[k] = _serialize(v)
+            out[k] = _ser(v)
         else:
             out[k] = v
     return out
 
 
+# ── Fornitore: trova o crea ───────────────────────────────────────────────────
+
+async def _trova_o_crea_fornitore(fattura: dict) -> tuple[dict, bool]:
+    """
+    Cerca il fornitore per P.IVA poi C.F.
+    Se non trovato lo crea con dati minimi e flag alert_incompleto=True.
+    Ritorna (fornitore_doc, creato_adesso).
+    """
+    piva = (fattura.get("fornitore_piva") or "").strip()
+    cf   = (fattura.get("fornitore_cf")   or "").strip()
+    nome = (fattura.get("fornitore_nome") or "").strip()
+
+    forn = None
+    if piva:
+        forn = await col_fornitori().find_one({"partita_iva": piva})
+    if not forn and cf:
+        forn = await col_fornitori().find_one({"codice_fiscale": cf})
+
+    if forn:
+        # Arricchisce ragione_sociale se mancante
+        if nome and not (forn.get("ragione_sociale") or "").strip():
+            await col_fornitori().update_one(
+                {"_id": forn["_id"]},
+                {"$set": {"ragione_sociale": nome,
+                           "updated_at": datetime.utcnow().isoformat()}}
+            )
+            forn["ragione_sociale"] = nome
+        return forn, False
+
+    # Crea con dati minimi dall'XML
+    nuovo: dict = {
+        "_id":              str(uuid.uuid4()),
+        "partita_iva":      piva,
+        "codice_fiscale":   cf,
+        "ragione_sociale":  nome,
+        "indirizzo":        fattura.get("fornitore_indirizzo", ""),
+        "cap":              fattura.get("fornitore_cap", ""),
+        "citta":            fattura.get("fornitore_citta", ""),
+        "iban":             fattura.get("fornitore_iban", ""),
+        "pec":              "",
+        "email":            "",
+        "metodo_pagamento": "",
+        "categoria_iva":    "generico",
+        "detraibilita_default_pct": 100.0,
+        "alert_incompleto": True,
+        "source":           "auto_da_fattura",
+        "attivo":           True,
+        "created_at":       datetime.utcnow().isoformat(),
+        "updated_at":       datetime.utcnow().isoformat(),
+    }
+    await col_fornitori().insert_one(nuovo)
+    return nuovo, True
+
+
+# ── Deduplicazione ────────────────────────────────────────────────────────────
+
+async def _is_duplicata(fattura: dict) -> str | None:
+    """Controlla duplicati. Ritorna motivo se duplicata, None se nuova."""
+    if await col_invoices().find_one({"xml_hash": fattura["xml_hash"]}):
+        return "hash"
+    piva = fattura.get("fornitore_piva", "")
+    num  = fattura.get("numero_fattura", "")
+    data = fattura.get("data_fattura", "")
+    if piva and num and data:
+        if await col_invoices().find_one({
+            "fornitore_piva": piva,
+            "numero_fattura": num,
+            "data_fattura":   data,
+        }):
+            return "chiave_fiscale"
+    return None
+
+
 # ── GET /api/fatture ──────────────────────────────────────────────────────────
+
 @router.get("")
 async def lista_fatture(
-    request: Request,
-    anno:          Optional[int]  = Query(None),
-    stato:         Optional[str]  = Query(None),   # da_pagare|pagata|annullata
+    request:        Request,
+    anno:           Optional[int] = Query(None),
+    stato:          Optional[str] = Query(None),
     fornitore_piva: Optional[str] = Query(None),
-    tipo_documento: Optional[str] = Query(None),   # TD01|TD04|ecc.
-    source:        Optional[str]  = Query(None),   # pec|upload|manuale
-    limit:         int            = Query(500),
-    skip:          int            = Query(0),
-    cerca:         Optional[str]  = Query(None),   # ricerca testuale
+    tipo_documento: Optional[str] = Query(None),
+    cerca:          Optional[str] = Query(None),
+    limit:          int           = Query(200),
+    skip:           int           = Query(0),
 ):
     verify_token(request)
 
-    filtro = {}
-    if anno:           filtro["anno"]          = anno
-    if stato:          filtro["stato"]         = stato
+    filtro: dict = {"deleted_at": {"$exists": False}}
+    if anno:           filtro["anno"]           = anno
+    if stato:          filtro["stato"]          = stato
     if fornitore_piva: filtro["fornitore_piva"] = fornitore_piva
     if tipo_documento: filtro["tipo_documento"] = tipo_documento
-    if source:         filtro["source"]        = source
     if cerca:
         filtro["$or"] = [
-            {"fornitore_nome":  {"$regex": cerca, "$options": "i"}},
-            {"numero_fattura":  {"$regex": cerca, "$options": "i"}},
-            {"fornitore_piva":  {"$regex": cerca, "$options": "i"}},
+            {"fornitore_nome": {"$regex": cerca, "$options": "i"}},
+            {"numero_fattura": {"$regex": cerca, "$options": "i"}},
+            {"fornitore_piva": {"$regex": cerca, "$options": "i"}},
         ]
 
     cursor = col_invoices().find(filtro).sort("data_fattura", -1).skip(skip).limit(limit)
-    docs = await cursor.to_list(length=limit)
+    docs   = await cursor.to_list(length=limit)
     totale = await col_invoices().count_documents(filtro)
 
-    # Costruisci mappa piva→nome dai fornitori (ragione_sociale o campo legacy denominazione)
-    all_forn = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1, "denominazione": 1}).to_list(length=None)
+    # Mappa piva→nome dai fornitori (solo lettura, nessuna scrittura)
+    all_forn = await col_fornitori().find(
+        {}, {"partita_iva": 1, "ragione_sociale": 1}
+    ).to_list(length=None)
     forn_map = {
-        f["partita_iva"]: f.get("ragione_sociale") or f.get("denominazione") or ""
+        f["partita_iva"]: (f.get("ragione_sociale") or "")
         for f in all_forn if f.get("partita_iva")
     }
 
-    # Per ogni fattura: arricchisci fornitore_nome e importi dal raw_xml se mancanti
-    from app.services.xml_parser import parse_fattura_xml
-    to_update = []
+    risultato = []
     for d in docs:
-        piva = d.get("fornitore_piva") or ""
-        nome = d.get("fornitore_nome") or forn_map.get(piva, "")
-
-        # Se vuoto, estrai sempre dal raw_xml (fonte autoritativa)
-        if not nome and d.get("raw_xml"):
-            try:
-                parsed = parse_fattura_xml(d["raw_xml"].encode("utf-8", errors="replace"))
-                nome_xml = parsed.get("fornitore_nome", "")
-                upd = {}
-                if nome_xml:
-                    upd["fornitore_nome"] = nome_xml
-                    nome = nome_xml
-                    if piva:
-                        forn_map[piva] = nome_xml
-                # Importi mancanti: usa detraibilita_pct salvata sul documento se presente
-                if not (d.get("importo_imponibile") or 0) and parsed.get("importo_imponibile"):
-                    detr = float(d.get("detraibilita_pct") or parsed.get("detraibilita_pct") or 100.0)
-                    iva = parsed["importo_iva"]
-                    upd["importo_imponibile"] = parsed["importo_imponibile"]
-                    upd["importo_iva"] = iva
-                    upd["iva_detraibile"] = round(iva * detr / 100, 2)
-                if upd:
-                    to_update.append((d["_id"], upd))
-                    d.update(upd)
-            except Exception:
-                pass
-
-        d["fornitore_nome"] = nome
-
-    # Salva aggiornamenti nel DB in background (non blocca la risposta)
-    import asyncio
-    async def _flush_updates():
-        for doc_id, upd in to_update:
-            try:
-                await col_invoices().update_one({"_id": doc_id}, {"$set": upd})
-            except Exception:
-                pass
-        for piva, nome in forn_map.items():
-            if nome:
-                try:
-                    await col_fornitori().update_one(
-                        {"partita_iva": piva, "$or": [{"ragione_sociale": ""}, {"ragione_sociale": None}]},
-                        {"$set": {"ragione_sociale": nome}}
-                    )
-                except Exception:
-                    pass
-    if to_update or any(forn_map.values()):
-        asyncio.create_task(_flush_updates())
+        if not d.get("fornitore_nome"):
+            d["fornitore_nome"] = forn_map.get(d.get("fornitore_piva", ""), "")
+        risultato.append(_ser(d))
 
     # KPI aggregati
-    pipeline_kpi = [
-        {"$match": filtro},
-        {"$group": {
-            "_id": None,
-            "tot_imponibile": {"$sum": "$importo_imponibile"},
-            "tot_iva":        {"$sum": "$importo_iva"},
-            "tot_totale":     {"$sum": "$importo_totale"},
-            "tot_iva_detr":   {"$sum": "$iva_detraibile"},
-        }}
-    ]
-    kpi_cursor = col_invoices().aggregate(pipeline_kpi)
-    kpi_list = await kpi_cursor.to_list(length=1)
+    kpi_pipe = [{"$match": filtro}, {"$group": {
+        "_id":        None,
+        "imponibile": {"$sum": "$importo_imponibile"},
+        "iva":        {"$sum": "$importo_iva"},
+        "totale":     {"$sum": "$importo_totale"},
+        "iva_detr":   {"$sum": "$iva_detraibile"},
+    }}]
+    kpi_list = await col_invoices().aggregate(kpi_pipe).to_list(length=1)
     kpi = kpi_list[0] if kpi_list else {}
 
     return {
         "totale": totale,
-        "fatture": [_serialize(d) for d in docs],
+        "fatture": risultato,
         "kpi": {
-            "imponibile":   round(kpi.get("tot_imponibile", 0), 2),
-            "iva":          round(kpi.get("tot_iva", 0), 2),
-            "totale":       round(kpi.get("tot_totale", 0), 2),
-            "iva_detr":     round(kpi.get("tot_iva_detr", 0), 2),
-        }
+            "imponibile": round(kpi.get("imponibile", 0), 2),
+            "iva":        round(kpi.get("iva", 0), 2),
+            "totale":     round(kpi.get("totale", 0), 2),
+            "iva_detr":   round(kpi.get("iva_detr", 0), 2),
+        },
     }
 
 
 # ── GET /api/fatture/scadenzario ──────────────────────────────────────────────
+
 @router.get("/scadenzario")
-async def scadenzario(
-    request: Request,
-    giorni: int = Query(30),
-):
+async def scadenzario_fatture(request: Request, giorni: int = Query(30)):
     verify_token(request)
-    from datetime import date, timedelta
-    oggi = date.today().isoformat()
+    oggi   = date.today().isoformat()
     limite = (date.today() + timedelta(days=giorni)).isoformat()
-
-    filtro = {
-        "stato": "da_pagare",
+    cursor = col_invoices().find({
+        "stato":         {"$in": ["da_pagare", "scaduta"]},
         "data_scadenza": {"$gte": oggi, "$lte": limite},
-    }
-    cursor = col_invoices().find(filtro).sort("data_scadenza", 1).limit(200)
+        "deleted_at":    {"$exists": False},
+    }).sort("data_scadenza", 1).limit(200)
     docs = await cursor.to_list(length=200)
-
-    return {
-        "scadenze": [_serialize(d) for d in docs],
-        "totale": len(docs),
-    }
+    return {"scadenze": [_ser(d) for d in docs], "totale": len(docs)}
 
 
 # ── GET /api/fatture/{id} ─────────────────────────────────────────────────────
+
 @router.get("/{fattura_id}")
 async def dettaglio_fattura(request: Request, fattura_id: str):
     verify_token(request)
     doc = await col_invoices().find_one({"_id": fattura_id})
     if not doc:
-        # Prova anche con ObjectId
-        try:
-            doc = await col_invoices().find_one({"_id": ObjectId(fattura_id)})
-        except Exception:
-            pass
-    if not doc:
-        raise HTTPException(status_code=404, detail="Fattura non trovata")
-    return _serialize(doc)
+        raise HTTPException(404, "Fattura non trovata")
+    return _ser(doc)
 
 
 # ── POST /api/fatture/import-xml ─────────────────────────────────────────────
+
 @router.post("/import-xml")
-async def import_xml(
-    request: Request,
-    file: UploadFile = File(...),
-):
-    """Upload manuale di un singolo file XML o P7M."""
+async def import_xml(request: Request, file: UploadFile = File(...)):
+    """Importa un singolo file XML o P7M FatturaPA."""
     verify_token(request)
 
     if not file.filename.lower().endswith((".xml", ".p7m", ".xml.p7m")):
-        raise HTTPException(status_code=400, detail="File deve essere .xml o .p7m")
+        raise HTTPException(400, "File deve essere .xml o .p7m")
 
-    data = await file.read()
-
+    raw = await file.read()
     try:
-        fattura = parse_file(file.filename, data)
+        fattura = parse_file(file.filename, raw)
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Errore parsing: {e}")
+        raise HTTPException(422, f"Errore parsing XML: {e}")
 
-    # Dedup per hash
-    existing = await col_invoices().find_one({"xml_hash": fattura["xml_hash"]})
-    if existing:
+    # Controllo duplicati
+    motivo_dup = await _is_duplicata(fattura)
+    if motivo_dup:
         return {
-            "esito": "duplicata",
-            "fattura_id": str(existing.get("_id", "")),
-            "numero": fattura["numero_fattura"],
-            "messaggio": "Fattura già presente nel sistema",
+            "esito":     "duplicata",
+            "motivo":    motivo_dup,
+            "numero":    fattura["numero_fattura"],
+            "fornitore": fattura["fornitore_nome"],
+            "messaggio": "Documento già presente nel sistema",
         }
 
-    # Metodo pagamento: SEMPRE dall'anagrafica fornitore (l'XML viene ignorato)
-    fornitore = await col_fornitori().find_one(
-        {"partita_iva": fattura["fornitore_piva"]}
-    )
-    metodo = fornitore.get("metodo_pagamento", "") if fornitore else ""
-    fattura["metodo_pagamento"] = metodo
-    fattura["source"] = "upload"
-    fattura["_id"] = str(uuid.uuid4())
+    # Fornitore
+    forn, creato = await _trova_o_crea_fornitore(fattura)
 
-    # Upsert fornitore
-    if fattura["fornitore_piva"]:
-        await col_fornitori().update_one(
-            {"partita_iva": fattura["fornitore_piva"]},
-            {
-                "$setOnInsert": {
-                    "partita_iva":     fattura["fornitore_piva"],
-                    "metodo_pagamento": "",
-                    "created_at":      datetime.utcnow().isoformat(),
-                },
-                "$set": {
-                    "ragione_sociale": fattura["fornitore_nome"],
-                    "updated_at":      datetime.utcnow().isoformat(),
-                }
-            },
-            upsert=True,
-        )
+    # Metodo pagamento: SEMPRE dall'anagrafica fornitore, mai dall'XML
+    metodo = (forn.get("metodo_pagamento") or "").strip() if forn else ""
+    fattura["metodo_pagamento"] = metodo
+
+    # Nota credito TD04/TD08: importi negativi
+    if fattura.get("tipo_documento") in ("TD04", "TD08"):
+        for campo in ("importo_imponibile", "importo_iva", "importo_totale", "iva_detraibile"):
+            fattura[campo] = -abs(fattura.get(campo) or 0)
+
+    # Stato iniziale
+    fattura["stato"]                  = "da_pagare" if metodo else "da_classificare"
+    fattura["source"]                 = "upload"
+    fattura["_id"]                    = str(uuid.uuid4())
+    fattura["alert_fornitore_nuovo"]  = creato
+    fattura["alert_metodo_mancante"]  = not bool(metodo)
 
     await col_invoices().insert_one(fattura)
-    fattura_id = fattura["_id"]
 
-    # Smista in prima nota
-    smistamento = await smista_fattura(fattura_id, fattura, metodo)
+    # Prima nota automatica
+    smist = await smista_fattura(fattura["_id"], fattura, metodo)
 
     return {
-        "esito": "importata",
-        "fattura_id": fattura_id,
-        "numero": fattura["numero_fattura"],
-        "fornitore": fattura["fornitore_nome"],
-        "importo": fattura["importo_totale"],
-        "prima_nota": smistamento,
+        "esito":                "importata",
+        "fattura_id":           fattura["_id"],
+        "numero":               fattura["numero_fattura"],
+        "data":                 fattura["data_fattura"],
+        "tipo_documento":       fattura["tipo_documento"],
+        "fornitore":            fattura["fornitore_nome"],
+        "fornitore_piva":       fattura["fornitore_piva"],
+        "importo_imponibile":   fattura["importo_imponibile"],
+        "importo_iva":          fattura["importo_iva"],
+        "importo_totale":       fattura["importo_totale"],
+        "metodo_pagamento":     metodo or "",
+        "prima_nota":           smist,
+        "alert_fornitore_nuovo": creato,
+        "alert_metodo_mancante": not bool(metodo),
     }
 
 
 # ── POST /api/fatture/import-xml-bulk ────────────────────────────────────────
+
 @router.post("/import-xml-bulk")
-async def import_xml_bulk(
-    request: Request,
-    files: list[UploadFile] = File(...),
-):
-    """Upload di più file XML/P7M contemporaneamente."""
+async def import_xml_bulk(request: Request, files: list[UploadFile] = File(...)):
+    """Importa più file XML/P7M in un'unica chiamata."""
     verify_token(request)
     risultati = []
+
     for file in files:
-        data = await file.read()
+        raw = await file.read()
         try:
-            fattura = parse_file(file.filename, data)
+            fattura = parse_file(file.filename, raw)
         except Exception as e:
-            risultati.append({"file": file.filename, "esito": "errore", "messaggio": str(e)})
+            risultati.append({
+                "file": file.filename, "esito": "errore", "messaggio": str(e)
+            })
             continue
 
-        existing = await col_invoices().find_one({"xml_hash": fattura["xml_hash"]})
-        if existing:
-            risultati.append({"file": file.filename, "esito": "duplicata",
-                               "numero": fattura["numero_fattura"]})
+        motivo_dup = await _is_duplicata(fattura)
+        if motivo_dup:
+            risultati.append({
+                "file": file.filename, "esito": "duplicata",
+                "numero": fattura["numero_fattura"], "motivo": motivo_dup,
+            })
             continue
 
-        fornitore = await col_fornitori().find_one({"partita_iva": fattura["fornitore_piva"]})
-        metodo = fornitore.get("metodo_pagamento", "") if fornitore else ""
+        forn, creato = await _trova_o_crea_fornitore(fattura)
+        metodo = (forn.get("metodo_pagamento") or "").strip() if forn else ""
         fattura["metodo_pagamento"] = metodo
-        fattura["source"] = "upload"
-        fattura["_id"] = str(uuid.uuid4())
+
+        if fattura.get("tipo_documento") in ("TD04", "TD08"):
+            for campo in ("importo_imponibile", "importo_iva", "importo_totale", "iva_detraibile"):
+                fattura[campo] = -abs(fattura.get(campo) or 0)
+
+        fattura["stato"]                 = "da_pagare" if metodo else "da_classificare"
+        fattura["source"]                = "upload"
+        fattura["_id"]                   = str(uuid.uuid4())
+        fattura["alert_fornitore_nuovo"] = creato
+        fattura["alert_metodo_mancante"] = not bool(metodo)
+
         await col_invoices().insert_one(fattura)
-        smistamento = await smista_fattura(fattura["_id"], fattura, metodo)
+        smist = await smista_fattura(fattura["_id"], fattura, metodo)
+
         risultati.append({
-            "file": file.filename,
-            "esito": "importata",
-            "numero": fattura["numero_fattura"],
-            "importo": fattura["importo_totale"],
-            "prima_nota": smistamento,
+            "file":           file.filename,
+            "esito":          "importata",
+            "numero":         fattura["numero_fattura"],
+            "fornitore":      fattura["fornitore_nome"],
+            "importo_totale": fattura["importo_totale"],
+            "prima_nota":     smist,
+            "alert_fornitore_nuovo": creato,
+            "alert_metodo_mancante": not bool(metodo),
         })
 
     nuove     = sum(1 for r in risultati if r["esito"] == "importata")
     duplicate = sum(1 for r in risultati if r["esito"] == "duplicata")
     errori    = sum(1 for r in risultati if r["esito"] == "errore")
-    return {"nuove": nuove, "duplicate": duplicate, "errori": errori, "dettagli": risultati}
+    return {
+        "nuove": nuove, "duplicate": duplicate, "errori": errori,
+        "dettagli": risultati,
+    }
 
 
 # ── POST /api/fatture/{id}/paga ───────────────────────────────────────────────
+
 class PagaRequest(BaseModel):
     data_pagamento: str
-    metodo: str      # MP01|MP02|MP08
+    metodo: str
     importo: Optional[float] = None
     note: Optional[str] = None
 
 
 @router.post("/{fattura_id}/paga")
 async def paga_fattura(request: Request, fattura_id: str, body: PagaRequest):
-    """Registra un pagamento manuale per una fattura."""
     verify_token(request)
-
     doc = await col_invoices().find_one({"_id": fattura_id})
     if not doc:
-        raise HTTPException(status_code=404, detail="Fattura non trovata")
+        raise HTTPException(404, "Fattura non trovata")
     if doc.get("stato") == "pagata":
-        raise HTTPException(status_code=400, detail="Fattura già pagata")
+        raise HTTPException(400, "Fattura già pagata")
 
-    # Aggiorna metodo temporaneamente per smistamento
-    doc["metodo_pagamento"] = body.metodo
-    doc["data_fattura"]     = body.data_pagamento  # usa data pagamento come data movimento
+    doc_tmp = dict(doc)
+    doc_tmp["metodo_pagamento"] = body.metodo
+    doc_tmp["data_fattura"]     = body.data_pagamento
     if body.importo:
-        doc["importo_totale"] = body.importo
+        doc_tmp["importo_totale"] = body.importo
 
-    smistamento = await smista_fattura(fattura_id, doc, body.metodo)
+    smist = await smista_fattura(fattura_id, doc_tmp, body.metodo)
 
     await col_invoices().update_one(
         {"_id": fattura_id},
         {"$set": {
-            "stato":           "pagata",
-            "data_pagamento":  body.data_pagamento,
+            "stato":            "pagata",
+            "data_pagamento":   body.data_pagamento,
             "metodo_pagamento": body.metodo,
-            "note_pagamento":  body.note or "",
+            "note_pagamento":   body.note or "",
         }}
     )
-
-    return {"ok": True, "prima_nota": smistamento}
+    return {"ok": True, "prima_nota": smist}
 
 
 # ── PUT /api/fatture/{id} ─────────────────────────────────────────────────────
+
 class AggiornFatturaRequest(BaseModel):
-    metodo_pagamento:  Optional[str]   = None
-    stato:             Optional[str]   = None
-    data_scadenza:     Optional[str]   = None
-    note:              Optional[str]   = None
-    categoria_iva:     Optional[str]   = None
-    detraibilita_pct:  Optional[float] = None
+    metodo_pagamento: Optional[str]   = None
+    stato:            Optional[str]   = None
+    data_scadenza:    Optional[str]   = None
+    note:             Optional[str]   = None
+    categoria_iva:    Optional[str]   = None
+    detraibilita_pct: Optional[float] = None
 
 
 @router.put("/{fattura_id}")
-async def aggiorna_fattura(request: Request, fattura_id: str, body: AggiornFatturaRequest):
+async def aggiorna_fattura(
+    request: Request, fattura_id: str, body: AggiornFatturaRequest
+):
     verify_token(request)
     update = {k: v for k, v in body.model_dump().items() if v is not None}
     if not update:
-        raise HTTPException(status_code=400, detail="Nessun campo da aggiornare")
+        raise HTTPException(400, "Nessun campo da aggiornare")
     update["updated_at"] = datetime.utcnow().isoformat()
-
     result = await col_invoices().update_one({"_id": fattura_id}, {"$set": update})
     if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Fattura non trovata")
+        raise HTTPException(404, "Fattura non trovata")
     return {"ok": True}
 
 
 # ── DELETE /api/fatture/{id} ──────────────────────────────────────────────────
+
 @router.delete("/{fattura_id}")
 async def elimina_fattura(request: Request, fattura_id: str):
-    """Soft delete: marca la fattura come annullata e rimuove il movimento prima nota."""
+    """Soft delete: annulla la fattura e il movimento prima nota collegato."""
     verify_token(request)
-    from app.database import col_pn_cassa, col_pn_banca, col_pn_provvisori
-
     doc = await col_invoices().find_one({"_id": fattura_id})
     if not doc:
-        raise HTTPException(status_code=404, detail="Fattura non trovata")
+        raise HTTPException(404, "Fattura non trovata")
 
-    # Soft delete del movimento prima nota collegato
     prima_nota_id   = doc.get("prima_nota_id")
     prima_nota_tipo = doc.get("prima_nota_tipo")
     if prima_nota_id and prima_nota_tipo:
-        col_map = {"cassa": col_pn_cassa(), "banca": col_pn_banca(),
-                   "provvisorio": col_pn_provvisori()}
+        col_map = {
+            "cassa":       col_pn_cassa(),
+            "banca":       col_pn_banca(),
+            "provvisorio": col_pn_provvisori(),
+        }
         col = col_map.get(prima_nota_tipo)
         if col:
             await col.update_one(
                 {"_id": prima_nota_id},
-                {"$set": {"status": "deleted", "deleted_at": datetime.utcnow().isoformat()}}
+                {"$set": {"status": "deleted",
+                           "deleted_at": datetime.utcnow().isoformat()}}
             )
 
     await col_invoices().update_one(
         {"_id": fattura_id},
-        {"$set": {"stato": "annullata", "deleted_at": datetime.utcnow().isoformat()}}
+        {"$set": {"stato": "annullata",
+                   "deleted_at": datetime.utcnow().isoformat()}}
     )
     return {"ok": True}
-
-
-# ── GET /api/fatture/debug-sample ────────────────────────────────────────────
-@router.get("/debug-sample")
-async def debug_sample(request: Request):
-    """Mostra i campi del primo documento senza fornitore_nome."""
-    verify_token(request)
-    doc = await col_invoices().find_one({"$or": [{"fornitore_nome": ""}, {"fornitore_nome": None}]})
-    if not doc:
-        return {"messaggio": "Tutti i documenti hanno fornitore_nome"}
-    return {
-        "campi_presenti": list(doc.keys()),
-        "ha_raw_xml": bool(doc.get("raw_xml")),
-        "raw_xml_len": len(doc.get("raw_xml") or ""),
-        "fornitore_piva": doc.get("fornitore_piva"),
-        "fornitore_nome": doc.get("fornitore_nome"),
-        "numero_fattura": doc.get("numero_fattura"),
-    }
