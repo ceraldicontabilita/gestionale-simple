@@ -31,7 +31,41 @@ Top MCP Servers:
 
 ## Team Tips
 
-_TODO_
+**Struttura del repo:**
+```
+gestionale-simple/
+├── main.py                      # entrypoint FastAPI, registra tutti i router
+├── app/
+│   ├── database.py              # connessione MongoDB Atlas + shorthand per ogni collection
+│   ├── routers/                 # un file per modulo (fatture, fornitori, prima_nota, ecc.)
+│   │   ├── fatture.py           # upload XML FatturaPA + lista/dettaglio fatture
+│   │   ├── prima_nota.py        # cassa, banca, provvisori — movimenti contabili
+│   │   ├── estratto_conto.py    # import estratto bancario CSV + riconciliazione
+│   │   ├── corrispettivi.py     # corrispettivi giornalieri (XML COR10 registratore telematico)
+│   │   ├── fornitori.py         # anagrafica fornitori (metodo pagamento qui, mai dall'XML)
+│   │   ├── veicoli.py           # parco auto noleggio
+│   │   ├── verbali.py           # verbali noleggio
+│   │   ├── cedolini.py          # cedolini dipendenti
+│   │   ├── dipendenti.py        # anagrafica dipendenti
+│   │   ├── scadenzario.py       # scadenzario fornitori
+│   │   └── pec.py               # PEC inbox
+│   └── services/
+│       ├── xml_parser.py        # parser FatturaPA XML → dict Python
+│       ├── corrispettivi_parser.py  # parser COR10 XML corrispettivi
+│       ├── prima_nota_auto.py   # smistamento automatico fatture → cassa/banca/provvisori
+│       ├── ai_parser.py         # AI helper per parsing documenti
+│       ├── gmail_scanner.py     # scanner Gmail per fatture in arrivo
+│       └── pec_service.py       # integrazione PEC
+└── static/
+    └── index.html               # TUTTA la UI — single-page app, nessun framework
+```
+
+**Regole chiave:**
+- Il frontend è un unico file `static/index.html` — niente React/Vue, JS vanilla
+- Il metodo di pagamento viene SEMPRE dall'anagrafica fornitore in MongoDB, mai dall'XML
+- Deploy automatico su Render ad ogni push su `main`
+- Claude crea e merga sempre i PR — non farlo manualmente
+- Per testare: `gestionale-ceraldi.onrender.com` è la produzione, aspetta il deploy dopo il merge (~1-2 min)
 
 ## Get Started
 
