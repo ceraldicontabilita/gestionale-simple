@@ -58,6 +58,10 @@ async def _trova_o_crea_fornitore(fattura: dict) -> tuple[dict, bool]:
             forn["ragione_sociale"] = nome
         return forn, False
 
+    # Non creare un fornitore senza almeno P.IVA o ragione_sociale
+    if not piva and not cf and not nome:
+        return {}, False
+
     # Crea con dati minimi dall'XML
     nuovo: dict = {
         "_id":              new_id(),
