@@ -26,6 +26,7 @@ from app.routers.verbali       import router as verbali_router
 from app.routers.veicoli       import router as veicoli_router
 from app.routers.estratto_conto import router as estratto_router
 from app.routers.scadenzario   import router as scadenzario_router
+from app.routers.assegni       import router as assegni_router
 
 
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ app.include_router(verbali_router)
 app.include_router(veicoli_router)
 app.include_router(estratto_router)
 app.include_router(scadenzario_router)
+app.include_router(assegni_router)
 
 
 # ── Dashboard summary ────────────────────────────────────────────────────────

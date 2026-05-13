@@ -277,6 +277,7 @@ select.inp{cursor:pointer}
       <div class="sb-section">Ciclo Passivo</div>
       <div class="sb-item" data-p="fatture" onclick="go('fatture')"><span class="sb-icon">🧾</span>Fatture</div>
       <div class="sb-item" data-p="fornitori" onclick="go('fornitori')"><span class="sb-icon">🏢</span>Fornitori</div>
+      <div class="sb-item" data-p="assegni" onclick="go('assegni')"><span class="sb-icon">✏️</span>Assegni</div>
       <div class="sb-item" data-p="prima-nota" onclick="go('prima-nota')"><span class="sb-icon">📒</span>Prima Nota</div>
       <div class="sb-item" data-p="estratto" onclick="go('estratto')"><span class="sb-icon">🏦</span>Estratto Conto</div>
 
@@ -425,6 +426,7 @@ const PAGE_META={
   'scadenzario':  {title:'Scadenzario',   sub:'Prossime scadenze'},
   'fatture':      {title:'Fatture',       sub:'Ciclo passivo fornitori'},
   'fornitori':    {title:'Fornitori',     sub:'Anagrafica e IVA'},
+  'assegni':      {title:'Assegni',       sub:'Carnet e automazioni'},
   'prima-nota':   {title:'Prima Nota',    sub:'Cassa e banca'},
   'estratto':     {title:'Estratto Conto',sub:'Riconciliazione bancaria'},
   'corrispettivi':{title:'Corrispettivi', sub:'POS e confronto fonti'},
@@ -1126,11 +1128,21 @@ async function openFornitore(piva, nome){
         </tr>`).join('')}</tbody></table>`:''}
       </div>
       <div class="modal-foot">
+        <button class="btn btn-ghost btn-sm" onclick="fetchIbanDaFatture('${piva}')">📥 IBAN da fatture</button>
+        <button class="btn btn-ghost btn-sm" onclick="fetchDatiDaFatture('${piva}')">🔄 Dati da XML</button>
         <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
-        <button class="btn btn-primary" onclick="saveEditFornitore('${piva}')">Salva modifiche</button>
+        <button class="btn btn-primary" onclick="saveEditFornitore('${piva}')">Salva</button>
       </div>
     </div>`);
   }catch(e){err(e.message);}
+}
+async function fetchIbanDaFatture(piva){
+  try{const r=await GET(`/api/fornitori/${piva}/iban-from-fatture`);if(r.iban){$('ef-iban').value=r.iban;ok('IBAN importato: '+r.iban);}else warn('Nessun IBAN trovato nelle fatture');}
+  catch(e){err(e.message);}
+}
+async function fetchDatiDaFatture(piva){
+  try{const r=await GET(`/api/fornitori/${piva}/dati-da-fatture`);ok('Aggiornati: '+(r.aggiornati||[]).join(', '));closeModal();loadFornitori();}
+  catch(e){err(e.message);}
 }
 async function saveEditFornitore(piva){
   try{
@@ -1164,6 +1176,212 @@ async function saveFornitore(){
   catch(e){err(e.message);}
 }
 async function runAiClassifica(piva){warn('Classificazione AI...');try{await POST(`/api/fornitori/${piva}/classifica-iva`);ok('Classificazione AI completata');loadFornitori();}catch(e){err(e.message);}}
+
+/* ═══════════════════════════════════════════════════════
+   PAGE: ASSEGNI
+═══════════════════════════════════════════════════════ */
+PAGES['assegni']=async function(){
+  $('tb-actions').innerHTML=`
+    <button class="btn btn-ghost btn-sm" onclick="autoMatchAssegni()">🤖 Auto-Match</button>
+    <button class="btn btn-ghost btn-sm" onclick="syncDaEstrattoAssegni()">🔄 Sync Estratto</button>
+    <button class="btn btn-primary btn-sm" onclick="modalGeneraCarnet()">+ Genera carnet</button>`;
+  $('content').innerHTML=`
+    <div class="flex gap-3 mb-5 items-center flex-wrap">
+      <select id="ass-stato" class="inp" style="max-width:160px" onchange="loadAssegni()">
+        <option value="">Tutti gli stati</option>
+        <option value="vuoto">Vuoto</option>
+        <option value="compilato">Compilato</option>
+        <option value="emesso">Emesso</option>
+        <option value="incassato">Incassato</option>
+        <option value="annullato">Annullato</option>
+      </select>
+      <input id="ass-cerca" class="inp" style="max-width:280px" placeholder="🔍 Numero, beneficiario..." oninput="debounce(loadAssegni,400)()">
+    </div>
+    <div id="ass-kpi" class="kpi-grid mb-4"></div>
+    <div id="ass-body">${loading()}</div>`;
+  loadAssegniStats();
+  loadAssegni();
+};
+
+async function loadAssegniStats(){
+  try{
+    const s=await GET('/api/assegni/stats');
+    const pp=s.per_stato||{};
+    const stati={vuoto:'#9e9e9e',compilato:'#2196f3',emesso:'#ff9800',incassato:'#4caf50',annullato:'#f44336'};
+    $('ass-kpi').innerHTML=Object.entries(stati).map(([k,col])=>`
+      <div class="card" style="padding:14px 18px;border-left:4px solid ${col}">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3)">${k}</div>
+        <div style="font-size:22px;font-weight:800;margin-top:4px">${pp[k]?.count||0}</div>
+        <div style="font-size:11px;color:var(--text3)">${pp[k]?.totale?euro(pp[k].totale):'€ 0,00'}</div>
+      </div>`).join('');
+  }catch{}
+}
+
+async function loadAssegni(){
+  const stato=$('ass-stato')?.value||'';
+  const cerca=$('ass-cerca')?.value||'';
+  const el=$('ass-body'); if(!el)return;
+  el.innerHTML=loading();
+  try{
+    let url='/api/assegni?limit=300';
+    if(stato) url+=`&stato=${stato}`;
+    if(cerca) url+=`&cerca=${encodeURIComponent(cerca)}`;
+    const data=await GET(url);
+    const list=data?.assegni||[];
+    if(!list.length){el.innerHTML=`<div class="card">${emptyState('✏️','Nessun assegno trovato')}</div>`;return;}
+    const STATO_COLOR={vuoto:'#9e9e9e',compilato:'#2196f3',emesso:'#ff9800',incassato:'#4caf50',annullato:'#f44336',scaduto:'#795548'};
+    el.innerHTML=`<div class="tbl-wrap">
+      <div class="tbl-summary"><span>${list.length} assegni</span></div>
+      <table><thead><tr>
+        <th>Numero</th><th>Stato</th><th>Importo</th><th>Beneficiario</th><th>Fattura</th><th>Data emissione</th><th>Scadenza</th><th></th>
+      </tr></thead>
+      <tbody>${list.map(a=>{
+        const col=STATO_COLOR[a.stato]||'#9e9e9e';
+        return `<tr style="cursor:pointer" onclick="openAssegno('${a._id}')">
+          <td class="font-mono" style="font-weight:600">${a.numero||'–'}</td>
+          <td><span style="background:${col}22;color:${col};padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700">${a.stato||'–'}</span></td>
+          <td style="font-weight:700">${a.importo!=null?euro(a.importo):'–'}</td>
+          <td style="max-width:180px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${a.beneficiario||'–'}</td>
+          <td class="font-mono" style="font-size:11px">${a.numero_fattura||'–'}</td>
+          <td>${fmtDate(a.data_emissione)||'–'}</td>
+          <td>${fmtDate(a.data_scadenza)||'–'}</td>
+          <td style="text-align:right" onclick="event.stopPropagation()">
+            ${a.stato==='compilato'?`<button class="btn btn-ghost btn-xs" onclick="emettiAssegno('${a._id}')">Emetti</button>`:''}
+            ${a.stato==='emesso'?`<button class="btn btn-ghost btn-xs" onclick="incassaAssegno('${a._id}')">Incassa</button>`:''}
+          </td>
+        </tr>`;
+      }).join('')}</tbody></table></div>`;
+  }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
+}
+
+async function openAssegno(id){
+  try{
+    const a=await GET(`/api/assegni/${id}`);
+    const STATO_COLOR={vuoto:'#9e9e9e',compilato:'#2196f3',emesso:'#ff9800',incassato:'#4caf50',annullato:'#f44336'};
+    const col=STATO_COLOR[a.stato]||'#9e9e9e';
+    openModal(`<div class="modal" style="max-width:580px">
+      <div class="modal-head">
+        <div><div class="modal-title">Assegno ${a.numero||id}</div>
+          <div class="modal-sub"><span style="background:${col}22;color:${col};padding:1px 8px;border-radius:99px;font-size:11px;font-weight:700">${a.stato}</span></div>
+        </div>
+        <button class="modal-close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-row">
+          <div class="field"><label>Importo</label><input id="ea-imp" class="inp" type="number" step="0.01" value="${a.importo||''}"></div>
+          <div class="field"><label>Beneficiario</label><input id="ea-ben" class="inp" value="${a.beneficiario||''}"></div>
+          <div class="field"><label>Causale</label><input id="ea-cau" class="inp" value="${a.causale||''}"></div>
+          <div class="field"><label>Data emissione</label><input id="ea-dem" class="inp" type="date" value="${a.data_emissione||''}"></div>
+          <div class="field"><label>Data scadenza</label><input id="ea-dsc" class="inp" type="date" value="${a.data_scadenza||''}"></div>
+          <div class="field span2"><label>Fattura collegata</label>
+            <input id="ea-fat" class="inp" value="${a.numero_fattura||''}" placeholder="Numero fattura">
+          </div>
+          <div class="field span2"><label>Note</label><input id="ea-not" class="inp" value="${a.note||''}"></div>
+        </div>
+        ${a.fattura_collegata?`<div style="font-size:12px;color:var(--text3);margin-top:8px">ID Fattura: ${a.fattura_collegata}</div>`:''}
+      </div>
+      <div class="modal-foot">
+        ${a.stato==='compilato'||a.stato==='vuoto'?`<button class="btn btn-ghost btn-sm" onclick="emettiAssegno('${a._id}',true)">▶ Emetti</button>`:''}
+        ${a.stato==='emesso'?`<button class="btn btn-ghost btn-sm" onclick="incassaAssegno('${a._id}',true)">✅ Incassa</button>`:''}
+        ${a.stato!=='annullato'&&a.stato!=='incassato'?`<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="annullaAssegno('${a._id}')">✕ Annulla</button>`:''}
+        <button class="btn btn-ghost" onclick="closeModal()">Chiudi</button>
+        <button class="btn btn-primary" onclick="saveAssegno('${a._id}')">Salva</button>
+      </div>
+    </div>`);
+  }catch(e){err(e.message);}
+}
+
+async function saveAssegno(id){
+  try{
+    await PUT(`/api/assegni/${id}`,{
+      importo:$('ea-imp').value?+$('ea-imp').value:null,
+      beneficiario:$('ea-ben').value||null,
+      causale:$('ea-cau').value||null,
+      data_emissione:$('ea-dem').value||null,
+      data_scadenza:$('ea-dsc').value||null,
+      note:$('ea-not').value||null,
+    });
+    ok('Assegno aggiornato');closeModal();loadAssegni();loadAssegniStats();
+  }catch(e){err(e.message);}
+}
+
+async function emettiAssegno(id,fromModal=false){
+  try{
+    await POST(`/api/assegni/${id}/emetti`);
+    ok('Assegno emesso — movimento banca creato');
+    if(fromModal)closeModal();
+    loadAssegni();loadAssegniStats();
+  }catch(e){err(e.message);}
+}
+
+async function incassaAssegno(id,fromModal=false){
+  try{
+    await POST(`/api/assegni/${id}/incassa`);
+    ok('Assegno incassato');
+    if(fromModal)closeModal();
+    loadAssegni();loadAssegniStats();
+  }catch(e){err(e.message);}
+}
+
+async function annullaAssegno(id){
+  try{
+    await POST(`/api/assegni/${id}/annulla`);
+    ok('Assegno annullato');closeModal();loadAssegni();loadAssegniStats();
+  }catch(e){err(e.message);}
+}
+
+function modalGeneraCarnet(){
+  openModal(`<div class="modal" style="max-width:420px">
+    <div class="modal-head"><div class="modal-title">Genera Carnet Assegni</div><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field span2">
+          <label>Numero primo assegno</label>
+          <input id="gc-num" class="inp" placeholder="es. 0208769182-11">
+          <div style="font-size:11px;color:var(--text3);margin-top:4px">Formato: PREFISSO-NUMERO (es. bancacc-01)</div>
+        </div>
+        <div class="field">
+          <label>Quantità assegni</label>
+          <input id="gc-qty" class="inp" type="number" min="1" max="100" value="10">
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
+      <button class="btn btn-primary" onclick="generaCarnet()">Genera</button>
+    </div>
+  </div>`);
+}
+
+async function generaCarnet(){
+  const num=$('gc-num').value.trim();
+  const qty=+($('gc-qty').value)||10;
+  if(!num){err('Inserire il numero del primo assegno');return;}
+  try{
+    const r=await POST('/api/assegni/genera',{numero_primo:num,quantita:qty});
+    ok(`Generati ${r.generati} assegni (${r.primo} → ${r.ultimo})`);
+    closeModal();loadAssegni();loadAssegniStats();
+  }catch(e){err(e.message);}
+}
+
+async function autoMatchAssegni(){
+  warn('Auto-match in corso...');
+  try{
+    const r=await POST('/api/assegni/auto-match?dry_run=false',{});
+    const s=r.riepilogo||{};
+    ok(`Auto-match: L1=${s.L1} L2=${s.L2} L3=${s.L3} L4=${s.L4} | ambigui=${s.ambigui} | non trovati=${s.non_trovati}`);
+    loadAssegni();loadAssegniStats();
+  }catch(e){err(e.message);}
+}
+
+async function syncDaEstrattoAssegni(){
+  warn('Sync estratto conto...');
+  try{
+    const r=await POST('/api/assegni/sync-da-estratto',{});
+    ok(`Sync: ${r.riconciliati} riconciliati, ${r.creati} creati, ${r.saltati} saltati`);
+    loadAssegni();loadAssegniStats();
+  }catch(e){err(e.message);}
+}
 
 /* ═══════════════════════════════════════════════════════
    PAGE: PRIMA NOTA
