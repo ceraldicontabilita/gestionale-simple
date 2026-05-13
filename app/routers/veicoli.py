@@ -3,23 +3,16 @@ Router Veicoli/Flotta — Ceraldi Group ERP
 Anagrafica flotta aziendale: targhe, tipo contratto (proprietà/noleggio Leasys/ALD),
 scadenze bollo/revisione/assicurazione, abbinamento fatture noleggio.
 """
-import uuid
 from datetime import datetime, date, timedelta
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel
 
 from app.routers.auth import verify_token
 from app.database import get_db
+from app.utils import serialize_doc as _ser, new_id
 
 router = APIRouter(prefix="/api/veicoli", tags=["veicoli"])
-
-
-def _ser(doc):
-    if not doc:
-        return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
 
 
 def col_v():
@@ -132,7 +125,7 @@ async def crea_veicolo(request: Request, body: NuovoVeicolo):
         raise HTTPException(status_code=409, detail="Veicolo già presente")
 
     doc = {
-        "_id":           str(uuid.uuid4()),
+        "_id":           new_id(),
         "targa":         targa,
         "marca":         body.marca,
         "modello":       body.modello,

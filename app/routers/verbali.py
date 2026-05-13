@@ -2,7 +2,6 @@
 Router Verbali/Multe — Ceraldi Group ERP
 Upload PDF verbale → parse AI → scadenzario → pagamento → prima nota uscita cassa/banca.
 """
-import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Query, UploadFile, File
@@ -10,15 +9,9 @@ from pydantic import BaseModel
 
 from app.routers.auth import verify_token
 from app.database import get_db
+from app.utils import serialize_doc as _ser, new_id
 
 router = APIRouter(prefix="/api/verbali", tags=["verbali"])
-
-
-def _ser(doc):
-    if not doc:
-        return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
 
 
 def col_v():
@@ -55,7 +48,7 @@ async def upload_verbale(
             return {"skip": True, "id": str(existing["_id"]), "motivo": "verbale già presente"}
 
     doc = {
-        "_id":               str(uuid.uuid4()),
+        "_id":               new_id(),
         "numero_verbale":    numero,
         "targa":             dati.get("targa", "").upper(),
         "data_verbale":      dati.get("data_verbale", ""),
@@ -100,7 +93,7 @@ async def crea_verbale(request: Request, body: NuovoVerbale):
         raise HTTPException(status_code=409, detail="Verbale già presente")
 
     doc = {
-        "_id":               str(uuid.uuid4()),
+        "_id":               new_id(),
         "numero_verbale":    body.numero_verbale,
         "targa":             body.targa.upper(),
         "data_verbale":      body.data_verbale,
@@ -177,7 +170,7 @@ async def paga_verbale(request: Request, verbale_id: str, body: PagaVerbale):
 
     # Prima nota
     mov = {
-        "_id":         str(uuid.uuid4()),
+        "_id":         new_id(),
         "tipo":        "uscita",
         "importo":     importo,
         "data":        body.data_pagamento,

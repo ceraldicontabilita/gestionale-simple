@@ -11,15 +11,15 @@ Il metodo viene SEMPRE dal fornitore in anagrafica, mai dall'XML.
 Se il fornitore non ha metodo → provvisori.
 Idempotente: stesso fattura_id non crea duplicati.
 """
-import uuid
+import asyncio
 from datetime import datetime
-from bson import ObjectId
 from typing import Optional
 
 from app.database import (
     col_invoices, col_fornitori,
-    col_pn_cassa, col_pn_banca, col_pn_provvisori, col_assegni
+    col_pn_cassa, col_pn_banca, col_pn_provvisori
 )
+from app.utils import new_id as _nuovo_id
 
 # Codici MP che vanno in cassa
 MP_CASSA  = {"MP01"}
@@ -32,9 +32,6 @@ MP_ASSEGNO = {"MP08"}
 # Tutto il resto → provvisori
 # (MP12=riba, vuoto, sconosciuto)
 
-
-def _nuovo_id() -> str:
-    return str(uuid.uuid4())
 
 
 def _segno(tipo_documento: str) -> float:
@@ -314,12 +311,13 @@ async def _aggiorna_fattura_prima_nota(
 
 async def _trova_movimento_esistente(fattura_id: str) -> Optional[dict]:
     """Cerca se esiste già un movimento attivo per questa fattura."""
-    for col, dest in [
-        (col_pn_cassa(),      "cassa"),
-        (col_pn_banca(),      "banca"),
-        (col_pn_provvisori(), "provvisorio"),
-    ]:
-        doc = await col.find_one({"fattura_id": fattura_id, "status": {"$ne": "deleted"}})
+    filtro = {"fattura_id": fattura_id, "status": {"$ne": "deleted"}}
+    cassa, banca, prov = await asyncio.gather(
+        col_pn_cassa().find_one(filtro),
+        col_pn_banca().find_one(filtro),
+        col_pn_provvisori().find_one(filtro),
+    )
+    for doc, dest in [(cassa, "cassa"), (banca, "banca"), (prov, "provvisorio")]:
         if doc:
             return {"destinazione": dest, "movimento_id": doc["_id"]}
     return None

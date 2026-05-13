@@ -2,7 +2,7 @@
 Router Prima Nota — Ceraldi Group ERP
 Gestisce: Cassa, Banca, Provvisori, Sposta, Conferma.
 """
-import uuid
+import asyncio
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Query
@@ -11,25 +11,9 @@ from pydantic import BaseModel
 from app.routers.auth import verify_token
 from app.database import col_pn_cassa, col_pn_banca, col_pn_provvisori
 from app.services.prima_nota_auto import conferma_provvisorio, sposta_movimento
+from app.utils import serialize_doc as _serialize, new_id as _nuovi_id
 
 router = APIRouter(prefix="/api/prima-nota", tags=["prima-nota"])
-
-
-def _serialize(doc):
-    if doc is None:
-        return {}
-    from bson import ObjectId
-    out = {}
-    for k, v in doc.items():
-        if isinstance(v, ObjectId):
-            out[k] = str(v)
-        else:
-            out[k] = v
-    return out
-
-
-def _nuovi_id() -> str:
-    return str(uuid.uuid4())
 
 
 async def _saldo_collection(col, filtro: dict) -> dict:
@@ -294,8 +278,10 @@ async def riepilogo_mensile(request: Request, anno: int, mese: int):
     pfx = f"{anno}-{str(mese).zfill(2)}"
     filtro_mese = {"data": {"$regex": f"^{pfx}"}, "status": {"$ne": "deleted"}}
 
-    cassa_docs = await col_pn_cassa().find(filtro_mese).sort("data", 1).to_list(length=1000)
-    banca_docs = await col_pn_banca().find(filtro_mese).sort("data", 1).to_list(length=1000)
+    cassa_docs, banca_docs = await asyncio.gather(
+        col_pn_cassa().find(filtro_mese).sort("data", 1).to_list(length=1000),
+        col_pn_banca().find(filtro_mese).sort("data", 1).to_list(length=1000),
+    )
 
     def agg(docs):
         entrate = sum(d["importo"] for d in docs if d.get("tipo") == "entrata")

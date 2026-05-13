@@ -2,7 +2,6 @@
 Router Dipendenti — Ceraldi Group ERP
 CRUD anagrafica + presenze + import bulk da Zucchetti / impresasemplice.
 """
-import uuid
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Request, HTTPException, Query
@@ -10,15 +9,9 @@ from pydantic import BaseModel
 
 from app.routers.auth import verify_token
 from app.database import get_db
+from app.utils import serialize_doc as _ser, new_id
 
 router = APIRouter(prefix="/api/dipendenti", tags=["dipendenti"])
-
-
-def _ser(doc):
-    if not doc:
-        return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
 
 
 def col_dip():
@@ -96,7 +89,7 @@ async def crea_dipendente(request: Request, body: NuovoDipendente):
         raise HTTPException(status_code=409, detail="Dipendente già presente")
 
     doc = {
-        "_id":             str(uuid.uuid4()),
+        "_id":             new_id(),
         "codice_fiscale":  cf,
         "nome":            body.nome,
         "cognome":         body.cognome,
@@ -201,7 +194,7 @@ async def bulk_upsert_dipendenti(request: Request, body: List[DipendenteBulk]):
                     "ore_settimanali": item.ore_settimanali or 40.0,
                     "updated_at":      datetime.utcnow().isoformat(),
                 }, "$setOnInsert": {
-                    "_id":        str(uuid.uuid4()),
+                    "_id":        new_id(),
                     "attivo":     True,
                     "created_at": datetime.utcnow().isoformat(),
                 }},
@@ -254,7 +247,7 @@ async def registra_presenza(request: Request, cf: str, body: PresenzaEntry):
         raise HTTPException(status_code=400, detail="Data non valida (YYYY-MM-DD)")
 
     doc = {
-        "_id":            str(uuid.uuid4()),
+        "_id":            new_id(),
         "codice_fiscale": cf.upper(),
         "data":           body.data,
         "anno":           anno,

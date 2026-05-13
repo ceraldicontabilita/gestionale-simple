@@ -1,4 +1,4 @@
-# Welcome to Ceraldi Group
+# Welcome to Ceraldi Group Contabilità
 
 ## How We Use Claude
 
