@@ -1415,8 +1415,8 @@ async function loadCorr(){
         <tbody>${list.map(c=>`<tr style="${c.alert_discrepanza?'background:#fffbeb':''}">
           <td>${fmtDate(c.data||c.giorno)}</td>
           <td style="font-weight:700">${euro(c.totale)}</td>
-          <td style="color:var(--text3)">${euro(c.contanti)}</td>
-          <td>${euro(c.pos_dichiarato??c.elettronico)}</td>
+          <td style="color:var(--text3)">${euro(c.contanti??0)}</td>
+          <td>${euro(c.pos_dichiarato??c.elettronico??0)}</td>
           <td>${euro(c.pos_banca)}</td>
           <td style="font-weight:700;color:${Math.abs((c.pos_dichiarato??c.elettronico??0)-(c.pos_banca??0))>0.5?'var(--red)':'var(--green)'}">
             ${euro(Math.abs((c.pos_dichiarato??c.elettronico??0)-(c.pos_banca??0)))}

@@ -104,21 +104,43 @@ def _parse_cor10(root: ET.Element, xml_hash: str) -> dict:
     if id_nodes:
         matricola_rt = (id_nodes[0].text or "").strip()
 
-    # Pagamenti da DatiRT/Totali
+    # Pagamenti da DatiRT/Totali — supporta più nomi usati da diversi produttori RT
     contanti    = 0.0
     elettronico = 0.0
     n_doc       = 0
+    _CONT_TAGS = {"PAGATOCONTANTI", "CONTANTE", "CONTANTI", "TOTCONTANTE", "TOTCONTANTI",
+                  "TOTALCONTANTI", "PAGAMENTOCONTANTE"}
+    _ELETT_TAGS = {"PAGATOELETTRONICO", "ELETTRONICO", "PAGAMENTOELETTRONICO",
+                   "TOTELETTRONICO", "TOTALELETTRONICO", "PAGAMENTIELETTRONICI",
+                   "PAGAMENTIMEDIOELETTRONICO", "POSELETTRONICO"}
     totali_nodes = _find_all(root, "Totali")
     if totali_nodes:
         t = totali_nodes[0]
         for child in t:
             local = (child.tag.split("}")[-1] if "}" in child.tag else child.tag).upper()
-            if local == "PAGATOCONTANTI":
+            if local in _CONT_TAGS:
                 contanti = _safe_float(child.text or "0")
-            elif local == "PAGATOELETTRONICO":
+            elif local in _ELETT_TAGS:
                 elettronico = _safe_float(child.text or "0")
             elif local == "NUMERODOCCOMMERCIALI":
                 n_doc = int(_safe_float(child.text or "0"))
+
+    # Fallback: se Totali non trovati, cerca DatiPagamento come nel formato RT classico
+    if contanti == 0.0 and elettronico == 0.0:
+        for pag in _find_all(root, "DatiPagamento"):
+            modalita = ""
+            importo  = 0.0
+            for child in pag:
+                local = (child.tag.split("}")[-1] if "}" in child.tag else child.tag).upper()
+                if local in ("MODALITAPAGAMENTO", "MODALITA", "TIPOPAGAMENTO"):
+                    modalita = (child.text or "").strip().upper()
+                if local in ("IMPORTO", "IMPORTOPAGAMENTO"):
+                    importo = _safe_float(child.text or "0")
+            if any(k in modalita for k in ("CONTANT", "CASH", "MP01")):
+                contanti += importo
+            elif any(k in modalita for k in ("ELETTRON", "POS", "CARTA", "BANCOMAT",
+                                              "CREDIT", "SATISPAY", "PAYPAL", "MP02", "MP08")):
+                elettronico += importo
 
     totale = round(contanti + elettronico, 2)
 
