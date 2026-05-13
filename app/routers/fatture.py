@@ -213,6 +213,11 @@ async def dettaglio_fattura(request: Request, fattura_id: str):
     verify_token(request)
     doc = await col_invoices().find_one({"_id": fattura_id})
     if not doc:
+        try:
+            doc = await col_invoices().find_one({"_id": ObjectId(fattura_id)})
+        except Exception:
+            pass
+    if not doc:
         raise HTTPException(404, "Fattura non trovata")
     return _ser(doc)
 
@@ -445,3 +450,53 @@ async def elimina_fattura(request: Request, fattura_id: str):
                    "deleted_at": datetime.utcnow().isoformat()}}
     )
     return {"ok": True}
+
+
+# ── POST /api/fatture/migrazione-nomi ─────────────────────────────────────────
+
+@router.post("/migrazione-nomi")
+async def migrazione_nomi(request: Request):
+    """
+    One-time migration: popola fornitore_nome sui documenti che ce l'hanno vuoto
+    usando la ragione_sociale dall'anagrafica fornitori (match per partita_iva).
+    Sicuro da richiamare più volte (idempotente).
+    """
+    verify_token(request)
+
+    # Carica tutti i fornitori con partita_iva e ragione_sociale
+    all_forn = await col_fornitori().find(
+        {"ragione_sociale": {"$exists": True, "$ne": ""}},
+        {"partita_iva": 1, "ragione_sociale": 1}
+    ).to_list(length=None)
+    forn_map = {
+        f["partita_iva"]: f["ragione_sociale"]
+        for f in all_forn if f.get("partita_iva") and f.get("ragione_sociale")
+    }
+
+    if not forn_map:
+        return {"aggiornate": 0, "messaggio": "Nessun fornitore con ragione_sociale trovato"}
+
+    # Trova fatture senza fornitore_nome
+    cursor = col_invoices().find(
+        {"$or": [{"fornitore_nome": ""}, {"fornitore_nome": None},
+                 {"fornitore_nome": {"$exists": False}}]},
+        {"_id": 1, "fornitore_piva": 1}
+    )
+    docs = await cursor.to_list(length=None)
+
+    aggiornate = 0
+    for d in docs:
+        piva = d.get("fornitore_piva", "")
+        nome = forn_map.get(piva, "")
+        if nome:
+            await col_invoices().update_one(
+                {"_id": d["_id"]},
+                {"$set": {"fornitore_nome": nome}}
+            )
+            aggiornate += 1
+
+    return {
+        "aggiornate": aggiornate,
+        "fatture_senza_nome": len(docs),
+        "fornitori_disponibili": len(forn_map),
+    }
