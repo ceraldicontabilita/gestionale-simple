@@ -28,12 +28,16 @@ async def lista_fornitori(
     limit:   int           = Query(300),
 ):
     verify_token(request)
-    filtro = {}
+    # Escludi documenti orphan senza né ragione_sociale né partita_iva
+    filtro: dict = {"$or": [
+        {"ragione_sociale": {"$nin": [None, ""]}},
+        {"partita_iva":     {"$nin": [None, ""]}},
+    ]}
     if cerca:
-        filtro["$or"] = [
+        filtro["$and"] = [{"$or": filtro.pop("$or")}, {"$or": [
             {"ragione_sociale": {"$regex": cerca, "$options": "i"}},
             {"partita_iva":     {"$regex": cerca, "$options": "i"}},
-        ]
+        ]}]
     if metodo:
         filtro["metodo_pagamento"] = metodo
 

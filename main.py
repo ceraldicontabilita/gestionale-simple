@@ -29,6 +29,23 @@ from app.routers.scadenzario   import router as scadenzario_router
 
 
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
+async def _cleanup_fornitori_orphan():
+    """Rimuove fornitori senza P.IVA e senza ragione_sociale (creati per errore da XML vuoto)."""
+    try:
+        from app.database import get_db
+        db = get_db()
+        result = await db["fornitori"].delete_many({
+            "$and": [
+                {"$or": [{"ragione_sociale": {"$in": [None, ""]}}, {"ragione_sociale": {"$exists": False}}]},
+                {"$or": [{"partita_iva":     {"$in": [None, ""]}}, {"partita_iva":     {"$exists": False}}]},
+            ]
+        })
+        if result.deleted_count:
+            print(f"✅ Cleanup: rimossi {result.deleted_count} fornitori orphan senza P.IVA/nome")
+    except Exception as e:
+        print(f"⚠️  Cleanup fornitori orphan: {e}")
+
+
 async def _migra_nomi_fornitori():
     """Popola fornitore_nome sui documenti che ce l'hanno vuoto, usando l'anagrafica."""
     try:
@@ -71,6 +88,7 @@ async def lifespan(app: FastAPI):
         from app.database import get_client
         await get_client().admin.command("ping")
         print("✅ MongoDB Atlas connesso")
+        asyncio.create_task(_cleanup_fornitori_orphan())
         asyncio.create_task(_migra_nomi_fornitori())
     except Exception as e:
         print(f"⚠️  MongoDB non raggiungibile: {e}")
@@ -123,8 +141,6 @@ app.include_router(scadenzario_router)
 @app.get("/api/dashboard/summary")
 async def dashboard_summary(anno: int = None):
     """KPI aggregati per la dashboard principale."""
-    from app.routers.auth import verify_token
-    from fastapi import Request
     import datetime
     if anno is None:
         anno = datetime.datetime.now().year
