@@ -806,23 +806,98 @@ async function loadFornitori(){
   const el=$('fo-body'); if(!el)return;
   el.innerHTML=loading();
   try{
-    const data=await GET(`/api/fornitori?limit=200${cerca?'&cerca='+encodeURIComponent(cerca):''}`);
+    const data=await GET(`/api/fornitori?limit=500${cerca?'&cerca='+encodeURIComponent(cerca):''}`);
     const list=data?.fornitori||data||[];
     if(!list.length){el.innerHTML=`<div class="card">${emptyState('🏢','Nessun fornitore trovato')}</div>`;return;}
     el.innerHTML=`<div class="tbl-wrap">
       <div class="tbl-summary"><span>${list.length} fornitori</span></div>
-      <table><thead><tr><th>Denominazione</th><th>P.IVA</th><th>Categoria</th><th>IVA Ded.</th><th>Fatturato</th><th></th></tr></thead>
-      <tbody>${list.map(f=>`<tr>
-        <td style="font-weight:600">${f.ragione_sociale||f.denominazione||f.nome||'–'}</td>
-        <td class="font-mono">${f.partita_iva||f.piva||'–'}</td>
-        <td>${(f.categoria_iva||f.categoria)?badge(f.categoria_iva||f.categoria):'–'}</td>
-        <td>${f.detraibilita_default_pct!=null?`<span style="font-weight:700">${f.detraibilita_default_pct}%</span>`:f.detraibilita_iva_pct!=null?`<span style="font-weight:700">${f.detraibilita_iva_pct}%</span>`:'–'}</td>
-        <td style="font-weight:600">${f.fatture_anno!=null?f.fatture_anno+' fatt.':'–'}</td>
-        <td style="text-align:right">
+      <table><thead><tr>
+        <th>Denominazione</th>
+        <th>P.IVA</th>
+        <th>Metodo Pag.</th>
+        <th>IBAN</th>
+        <th>Categoria IVA</th>
+        <th>Ded. %</th>
+        <th>Fatt. ${new Date().getFullYear()}</th>
+        <th>Totale</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${list.map(f=>`<tr style="cursor:pointer" onclick="openFornitore('${f.partita_iva||f._id}','${(f.ragione_sociale||'').replace(/'/g,"&apos;")}')">
+        <td style="font-weight:600;max-width:220px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.ragione_sociale||'–'}</div></td>
+        <td class="font-mono" style="font-size:12px">${f.partita_iva||'–'}</td>
+        <td style="font-size:12px">${_metodoLabel(f.metodo_pagamento)||'–'}</td>
+        <td class="font-mono" style="font-size:11px;color:var(--text3)">${f.iban?f.iban.substring(0,18)+'…':'–'}</td>
+        <td>${f.categoria_iva?badge(f.categoria_iva):'–'}</td>
+        <td style="font-weight:700;color:${f.detraibilita_default_pct>0&&f.detraibilita_default_pct<100?'var(--orange)':'var(--text)'}">${f.detraibilita_default_pct!=null?f.detraibilita_default_pct+'%':'–'}</td>
+        <td style="text-align:center">${f.fatture_anno||0}</td>
+        <td style="font-weight:700">${f.totale_fatturato?euro(f.totale_fatturato):'–'}</td>
+        <td style="text-align:right" onclick="event.stopPropagation()">
           <button class="btn btn-ghost btn-xs" onclick="runAiClassifica('${f.partita_iva||f._id}')">🤖 AI</button>
         </td>
       </tr>`).join('')}</tbody></table></div>`;
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
+}
+async function openFornitore(piva, nome){
+  if(!piva||piva==='undefined')return;
+  try{
+    const d=await GET(`/api/fornitori/${piva}`);
+    const f=d.fornitore||{};
+    const fatture=d.ultime_fatture||[];
+    openModal(`<div class="modal" style="max-width:640px">
+      <div class="modal-head">
+        <div><div class="modal-title">${f.ragione_sociale||nome}</div><div class="modal-sub">P.IVA ${f.partita_iva||'–'}</div></div>
+        <button class="modal-close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-row" style="margin-bottom:16px">
+          <div class="field"><label>Metodo pagamento</label>
+            <select id="ef-met" class="inp">
+              <option value="">– non specificato –</option>
+              <option value="MP01" ${f.metodo_pagamento==='MP01'?'selected':''}>Contanti (MP01)</option>
+              <option value="MP02" ${f.metodo_pagamento==='MP02'?'selected':''}>Assegno (MP02)</option>
+              <option value="MP05" ${f.metodo_pagamento==='MP05'?'selected':''}>Bonifico (MP05)</option>
+              <option value="MP08" ${f.metodo_pagamento==='MP08'?'selected':''}>Carta (MP08)</option>
+            </select>
+          </div>
+          <div class="field"><label>Categoria IVA</label>
+            <select id="ef-cat" class="inp">
+              <option value="">–</option>
+              ${['noleggio','riparazione','carburante','assicurazione','telefonia','energia','alimentari','consulenza','generico'].map(c=>`<option ${f.categoria_iva===c?'selected':''}>${c}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Detraibilità IVA %</label>
+            <input id="ef-ded" class="inp" type="number" min="0" max="100" value="${f.detraibilita_default_pct??100}">
+          </div>
+          <div class="field span2"><label>IBAN</label>
+            <input id="ef-iban" class="inp" value="${f.iban||''}" placeholder="IT60...">
+          </div>
+        </div>
+        ${fatture.length?`<div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:8px">ULTIME FATTURE</div>
+        <table style="font-size:12px"><thead><tr><th>N°</th><th>Data</th><th>Totale</th><th>Stato</th></tr></thead>
+        <tbody>${fatture.map(ft=>`<tr>
+          <td class="font-mono">${ft.numero_fattura||'–'}</td>
+          <td>${fmtDate(ft.data_fattura)}</td>
+          <td style="font-weight:700">${euro(ft.importo_totale)}</td>
+          <td>${badge(ft.stato||'da_pagare')}</td>
+        </tr>`).join('')}</tbody></table>`:''}
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
+        <button class="btn btn-primary" onclick="saveEditFornitore('${piva}')">Salva modifiche</button>
+      </div>
+    </div>`);
+  }catch(e){err(e.message);}
+}
+async function saveEditFornitore(piva){
+  try{
+    await PUT(`/api/fornitori/${piva}`,{
+      metodo_pagamento:$('ef-met').value||null,
+      categoria_iva:$('ef-cat').value||null,
+      detraibilita_default_pct:$('ef-ded').value?+$('ef-ded').value:null,
+      iban:$('ef-iban').value||null,
+    });
+    ok('Fornitore aggiornato');closeModal();loadFornitori();
+  }catch(e){err(e.message);}
 }
 function modalNuovoFornitore(){
   openModal(`<div class="modal">
