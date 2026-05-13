@@ -10,7 +10,6 @@ import tempfile
 import os
 from datetime import datetime
 from xml.etree import ElementTree as ET
-from typing import Optional
 
 
 # ── Costanti IVA detraibilità (Art. 19-bis1 DPR 633/72) ─────────────────────

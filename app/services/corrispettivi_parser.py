@@ -31,7 +31,6 @@ Il parser è tollerante e prova più percorsi prima di arrendersi.
 import hashlib
 from datetime import datetime
 from xml.etree import ElementTree as ET
-from typing import Optional
 
 
 def _tag(el: ET.Element, *path: str) -> str:
