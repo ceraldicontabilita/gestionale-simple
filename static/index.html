@@ -1204,7 +1204,7 @@ async function switchPN(tipo,btn){
           <td style="text-align:right;white-space:nowrap">
             <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','provvisori','cassa')">→ cassa</button>
             <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','provvisori','banca')">→ banca</button>
-            <button class="btn btn-ghost btn-xs" onclick="modalConfermaProvvisorio('${m._id}','${m.tipo}')">✓ Conf.</button>
+            <button class="btn btn-ghost btn-xs" onclick="modalConfermaProvvisorio('${m._id}')">✓ Conf.</button>
           </td>
         </tr>`).join('');
       // Section 2: fatture da classificare (metodo mancante o fornitore nuovo)
@@ -1285,6 +1285,26 @@ async function spostaMovimento(id, da, a){
 async function riconciliaTutti(){
   try{const r=await POST('/api/estratto-conto/riconcilia-tutti');ok(`Riconciliati: ${r?.riconciliati||0}`);switchPN('provvisori');}
   catch(e){err(e.message);}
+}
+function modalConfermaProvvisorio(id){
+  openModal(`<div class="modal">
+    <div class="modal-head"><div class="modal-title">Conferma movimento</div><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-body">
+      <p style="color:var(--text2);margin-bottom:16px">Dove vuoi registrare questo pagamento?</p>
+      <div class="field"><label>Data pagamento</label><input id="conf-data" type="date" class="inp" value="${today()}"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
+      <button class="btn btn-secondary" onclick="confermaProvv('${id}','cassa')">→ Cassa</button>
+      <button class="btn btn-primary" onclick="confermaProvv('${id}','banca')">→ Banca</button>
+    </div>
+  </div>`);
+}
+async function confermaProvv(id, dest){
+  try{
+    await POST(`/api/prima-nota/provvisori/${id}/conferma`,{destinazione:dest,data_pagamento:$('conf-data')?.value||''});
+    ok(`Spostato in ${dest}`); closeModal(); switchPN('provvisori');
+  }catch(e){err(e.message);}
 }
 
 /* ═══════════════════════════════════════════════════════
