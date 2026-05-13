@@ -29,12 +29,49 @@ from app.routers.scadenzario   import router as scadenzario_router
 
 
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
+async def _migra_nomi_fornitori():
+    """Popola fornitore_nome sui documenti che ce l'hanno vuoto, usando l'anagrafica."""
+    try:
+        from app.database import get_db
+        db = get_db()
+        all_forn = await db["fornitori"].find(
+            {"ragione_sociale": {"$exists": True, "$ne": ""}},
+            {"partita_iva": 1, "ragione_sociale": 1}
+        ).to_list(length=None)
+        forn_map = {
+            f["partita_iva"]: f["ragione_sociale"]
+            for f in all_forn if f.get("partita_iva") and f.get("ragione_sociale")
+        }
+        if not forn_map:
+            return
+        cursor = db["invoices"].find(
+            {"$or": [{"fornitore_nome": ""}, {"fornitore_nome": None},
+                     {"fornitore_nome": {"$exists": False}}]},
+            {"_id": 1, "fornitore_piva": 1}
+        )
+        docs = await cursor.to_list(length=None)
+        aggiornate = 0
+        for d in docs:
+            nome = forn_map.get(d.get("fornitore_piva", ""), "")
+            if nome:
+                await db["invoices"].update_one(
+                    {"_id": d["_id"]}, {"$set": {"fornitore_nome": nome}}
+                )
+                aggiornate += 1
+        if aggiornate:
+            print(f"✅ Migration: aggiornati {aggiornate} fornitore_nome")
+    except Exception as e:
+        print(f"⚠️  Migration nomi fornitori: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
     try:
         from app.database import get_client
         await get_client().admin.command("ping")
         print("✅ MongoDB Atlas connesso")
+        asyncio.create_task(_migra_nomi_fornitori())
     except Exception as e:
         print(f"⚠️  MongoDB non raggiungibile: {e}")
     yield
