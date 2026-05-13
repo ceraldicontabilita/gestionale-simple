@@ -250,14 +250,21 @@ async def conferma_provvisorio(
     }
 
 
+def _col_by_name(nome: str):
+    if nome == "cassa":      return col_pn_cassa()
+    if nome == "banca":      return col_pn_banca()
+    if nome == "provvisori": return col_pn_provvisori()
+    raise ValueError(f"Collezione sconosciuta: {nome}")
+
+
 async def sposta_movimento(
     movimento_id: str,
-    da: str,   # "cassa" | "banca"
-    a: str,    # "cassa" | "banca"
+    da: str,   # "cassa" | "banca" | "provvisori"
+    a: str,    # "cassa" | "banca" | "provvisori"
 ) -> dict:
-    """Sposta un movimento da cassa a banca o viceversa."""
-    col_da = col_pn_cassa() if da == "cassa" else col_pn_banca()
-    col_a  = col_pn_cassa() if a  == "cassa" else col_pn_banca()
+    """Sposta un movimento tra cassa, banca e provvisori."""
+    col_da = _col_by_name(da)
+    col_a  = _col_by_name(a)
 
     doc = await col_da.find_one({"_id": movimento_id})
     if not doc:
@@ -278,6 +285,8 @@ async def sposta_movimento(
         doc.setdefault("is_assegno", False)
         doc.setdefault("riconciliato", False)
         doc.setdefault("estratto_conto_id", None)
+    if a == "provvisori":
+        doc["stato"] = "pending"
 
     await col_a.insert_one(doc)
 

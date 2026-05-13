@@ -251,7 +251,8 @@ async def sposta(request: Request, body: SpostaRequest):
     verify_token(request)
     if body.da == body.a:
         raise HTTPException(status_code=400, detail="Sorgente e destinazione uguali")
-    if body.da not in ("cassa", "banca") or body.a not in ("cassa", "banca"):
+    VALID = ("cassa", "banca", "provvisori")
+    if body.da not in VALID or body.a not in VALID:
         raise HTTPException(status_code=400, detail="Valori da/a non validi")
     try:
         result = await sposta_movimento(body.movimento_id, body.da, body.a)

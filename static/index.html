@@ -1184,39 +1184,74 @@ async function switchPN(tipo,btn){
   el.innerHTML=loading();
   try{
     if(tipo==='provvisori'){
-      const data=await GET('/api/prima-nota/provvisori?limit=100');
-      const list=data?.movimenti||data||[];
+      const [dataProv, dataFatt] = await Promise.all([
+        GET('/api/prima-nota/provvisori?limit=200'),
+        GET('/api/fatture?stato=da_classificare&limit=100'),
+      ]);
+      const list = dataProv?.provvisori||[];
+      const fatDaClass = dataFatt?.fatture||[];
       $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="riconciliaTutti()">🔄 Riconcilia tutti</button>`;
-      el.innerHTML=`<div class="tbl-wrap">
-        <div class="tbl-summary"><span>${list.length} provvisori da riconciliare</span></div>
-        <table><thead><tr><th>Data</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Fonte</th><th></th></tr></thead>
-        <tbody>${list.length===0?`<tr><td colspan="6">${emptyState('✅','Nessun movimento provvisorio','Tutto riconciliato!')}</td></tr>`:list.map(m=>`<tr>
-          <td>${fmtDate(m.data)}</td><td style="max-width:220px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
+      // Section 1: movimenti provvisori (F24, paghe, etc.)
+      const rowsProv = list.length===0
+        ? `<tr><td colspan="7">${emptyState('✅','Nessun movimento provvisorio','Tutto riconciliato!')}</td></tr>`
+        : list.map(m=>`<tr>
+          <td>${fmtDate(m.data)}</td>
+          <td style="font-size:12px;color:var(--text2)">${m.descrizione?.match(/Fatt\.\s+(.+?)(?:\s+-\s|$)/)?.[1]?.trim()||'–'}</td>
+          <td style="max-width:200px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
           <td>${m.tipo==='entrata'?'<span class="badge badge-green">↑ Entrata</span>':'<span class="badge badge-red">↓ Uscita</span>'}</td>
           <td style="font-weight:700;color:${m.tipo==='entrata'?'var(--green)':'var(--red)'}">${euro(m.importo)}</td>
           <td>${badge(m.fonte||'provvisorio')}</td>
-          <td><button class="btn btn-ghost btn-xs" onclick="modalConfermaProvvisorio('${m._id}','${m.tipo}')">✓ Conferma</button></td>
-        </tr>`).join('')}</tbody></table></div>`;
+          <td style="text-align:right;white-space:nowrap">
+            <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','provvisori','cassa')">→ cassa</button>
+            <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','provvisori','banca')">→ banca</button>
+            <button class="btn btn-ghost btn-xs" onclick="modalConfermaProvvisorio('${m._id}','${m.tipo}')">✓ Conf.</button>
+          </td>
+        </tr>`).join('');
+      // Section 2: fatture da classificare (metodo mancante o fornitore nuovo)
+      const rowsFatt = fatDaClass.length===0
+        ? `<tr><td colspan="6" style="color:var(--text3);padding:8px">Nessuna fattura da classificare</td></tr>`
+        : fatDaClass.map(f=>`<tr>
+          <td>${fmtDate(f.data_fattura)}</td>
+          <td style="font-size:12px">${f.numero_fattura||'–'}</td>
+          <td style="max-width:180px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.fornitore_nome||f.fornitore_piva||'–'}</div></td>
+          <td style="font-weight:700">${euro(f.importo_totale)}</td>
+          <td>${f.alert_fornitore_nuovo?'<span class="badge badge-orange" title="Fornitore nuovo">Nuovo forn.</span>':''}${f.alert_metodo_mancante?'<span class="badge badge-red" title="Metodo pagamento mancante">Metodo?</span>':''}</td>
+          <td><button class="btn btn-ghost btn-xs" onclick="modalDettaglioFattura('${f._id}')">Dettaglio</button></td>
+        </tr>`).join('');
+      el.innerHTML=`<div class="tbl-wrap">
+        <div class="tbl-summary"><span>${list.length} movimenti provvisori</span></div>
+        <table><thead><tr><th>Data</th><th>N° Fatt.</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Fonte</th><th></th></tr></thead>
+        <tbody>${rowsProv}</tbody></table>
+        <div style="margin-top:24px">
+          <div class="tbl-summary" style="margin-bottom:8px"><span>Fatture da classificare (${fatDaClass.length})</span><small style="color:var(--text3)"> — metodo pagamento mancante o fornitore nuovo</small></div>
+          <table><thead><tr><th>Data</th><th>N° Fattura</th><th>Fornitore</th><th>Totale</th><th>Alert</th><th></th></tr></thead>
+          <tbody>${rowsFatt}</tbody></table>
+        </div>
+      </div>`;
     } else {
       const data=await GET(`/api/prima-nota/${tipo}?limit=200`);
       const list=data?.movimenti||data||[];
       const saldo=list.reduce((s,m)=>s+(m.tipo==='entrata'?+m.importo:-+m.importo),0);
       const altra=tipo==='cassa'?'banca':'cassa';
       $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalNuovoMov('${tipo}')">+ Movimento</button>`;
+      // Running saldo: list is newest-first, reverse to accumulate from oldest then flip back
+      let _acc=0;
+      const _saldi=[...list].reverse().map(m=>{_acc+=(m.tipo==='entrata'?+m.importo:-+m.importo);return _acc;}).reverse();
       el.innerHTML=`<div class="tbl-wrap">
         <div class="tbl-summary"><span>${list.length} movimenti</span><span>Saldo: <strong style="color:${saldo>=0?'var(--green)':'var(--red)'}">${euro(saldo)}</strong></span></div>
-        <table><thead><tr><th>Data</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Categoria</th><th></th></tr></thead>
-        <tbody>${list.map(m=>`<tr>
+        <table><thead><tr><th>Data</th><th>N° Fatt.</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Saldo</th><th></th></tr></thead>
+        <tbody>${list.map((m,i)=>{const nf=m.descrizione?.match(/Fatt\.\s+(.+?)(?:\s+-\s|$)/)?.[1]?.trim()||'–';const s=_saldi[i];return`<tr>
           <td>${fmtDate(m.data)}</td>
-          <td style="max-width:260px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
+          <td style="font-size:12px;color:var(--text2)">${nf}</td>
+          <td style="max-width:240px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
           <td>${m.tipo==='entrata'?'<span class="badge badge-green">↑ Entrata</span>':'<span class="badge badge-red">↓ Uscita</span>'}</td>
           <td style="font-weight:700;color:${m.tipo==='entrata'?'var(--green)':'var(--red)'}">${euro(m.importo)}</td>
-          <td style="font-size:12px;color:var(--text3)">${m.categoria||'–'}</td>
+          <td style="font-weight:600;color:${s>=0?'var(--green)':'var(--red)'}">${euro(s)}</td>
           <td style="text-align:right;white-space:nowrap">
             <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','${altra}')" title="Sposta in ${altra}">→ ${altra}</button>
             <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','provvisori')" title="Sposta in provvisori">→ prov.</button>
           </td>
-        </tr>`).join('')}</tbody></table></div>`;
+        </tr>`;}).join('')}</tbody></table></div>`;
     }
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
 }
@@ -1240,11 +1275,10 @@ async function saveMov(tipo){
   catch(e){err(e.message);}
 }
 async function spostaMovimento(id, da, a){
-  const dest = a==='provvisori' ? 'provvisori' : a;
-  if(!confirm(`Sposta questo movimento da ${da} a ${dest}?`)) return;
+  if(!confirm(`Sposta da ${da} a ${a}?`)) return;
   try{
-    await POST('/api/prima-nota/sposta', {movimento_id: id, da, a: dest==='provvisori'?da:dest});
-    ok(`Movimento spostato in ${dest}`);
+    await POST('/api/prima-nota/sposta', {movimento_id: id, da, a});
+    ok(`Spostato in ${a}`);
     switchPN(da);
   }catch(e){err(e.message);}
 }
