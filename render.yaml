@@ -1,7 +1,9 @@
 services:
   - type: web
-    name: gestionale
+    name: gestionale-ceraldi
     runtime: python
+    region: frankfurt
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -9,12 +11,50 @@ services:
         value: "true"
       - key: ADMIN_EMAIL
         value: ceraldigroupsrl@gmail.com
-      - key: ADMIN_PASSWORD_HASH
-        generateValue: false
-        # Imposta manualmente il valore bcrypt su Render dashboard
-        # Genera con: python -c "import bcrypt; print(bcrypt.hashpw(b'TUAPASSWORD', bcrypt.gensalt()).decode())"
+      - key: DB_NAME
+        value: Gestionale
+      - key: PEC_HOST
+        value: imaps.pec.aruba.it
+      - key: PEC_PORT
+        value: "993"
+      - key: PEC_EMAIL
+        value: fatturazioneceraldi@pec.it
+      - key: GMAIL_HOST
+        value: imap.gmail.com
+      - key: GMAIL_PORT
+        value: "993"
+      - key: GMAIL_EMAIL
+        value: ceraldigroupsrl@gmail.com
+      - key: ANTHROPIC_MODEL
+        value: claude-3-5-haiku-20241022
+      - key: WHATSAPP_PHONE_ID
+        value: "1091023494091681"
+      - key: WHATSAPP_DEST_VINCENZO
+        value: "393937415426"
+      - key: WHATSAPP_DEST_VALERIO
+        value: "393284388404"
+      - key: WHATSAPP_WEBHOOK_TOKEN
+        value: ceraldi_erp_webhook_2026
+      - key: OPENAPI_TOKEN
+        value: 69d86ebe314b08523b0dceda
+      - key: AZIENDA_PIVA
+        value: "04523831214"
+      - key: AZIENDA_NOME
+        value: Ceraldi Group SRL
+      - key: AZIENDA_ANNO
+        value: "2026"
+      # ── Segreti: impostare manualmente nella Render Dashboard ──
       - key: SECRET_KEY
-        generateValue: true
-      - key: MONGO_URI
         sync: false
-        # Opzionale: stringa di connessione MongoDB Atlas
+      - key: ADMIN_PASSWORD_HASH
+        sync: false
+      - key: MONGO_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PEC_PASSWORD
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
