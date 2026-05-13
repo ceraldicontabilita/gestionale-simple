@@ -5,23 +5,16 @@ Router Cedolini / Paghe / F24 — Ceraldi Group ERP
 - Riconciliazione F24 con estratto conto per codice tributo
 - Gmail scan per mittenti attendibili (studio paghe)
 """
-import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
 from app.routers.auth import verify_token
 from app.database import get_db
+from app.utils import serialize_doc as _ser, new_id
 
 router = APIRouter(prefix="/api/cedolini", tags=["cedolini"])
-
-
-def _ser(doc):
-    if not doc:
-        return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
 
 
 # ── POST /api/cedolini/upload-libro-unico ─────────────────────────────────────
@@ -79,7 +72,7 @@ async def upload_libro_unico(
                 "livello":  dip.get("livello", ""),
                 "updated_at": datetime.utcnow().isoformat(),
             }, "$setOnInsert": {
-                "_id": str(uuid.uuid4()),
+                "_id": new_id(),
                 "attivo": True,
                 "created_at": datetime.utcnow().isoformat(),
             }},
@@ -87,7 +80,7 @@ async def upload_libro_unico(
         )
 
         cedolino_doc = {
-            "_id":               str(uuid.uuid4()),
+            "_id":               new_id(),
             "codice_fiscale":    cf,
             "nome":              dip.get("nome", ""),
             "cognome":           dip.get("cognome", ""),
@@ -114,7 +107,7 @@ async def upload_libro_unico(
         })
         if not existing_pn:
             await db["prima_nota_banca"].insert_one({
-                "_id":               str(uuid.uuid4()),
+                "_id":               new_id(),
                 "tipo":              "uscita",
                 "importo":           totale_netti,
                 "data":              datetime.utcnow().strftime("%Y-%m-%d"),
@@ -164,7 +157,7 @@ async def upload_f24(
     codici   = dati.get("codici_tributo", [])
 
     # Salva F24
-    f24_id = str(uuid.uuid4())
+    f24_id = new_id()
     await db["f24_commercialista"].insert_one({
         "_id":            f24_id,
         "scadenza":       scadenza,
@@ -184,7 +177,7 @@ async def upload_f24(
             for c in codici if c.get("importo_debito", 0) > 0
         )
         await db["prima_nota_provvisori"].insert_one({
-            "_id":          str(uuid.uuid4()),
+            "_id":          new_id(),
             "tipo":         "uscita",
             "importo":      totale,
             "data":         scadenza or datetime.utcnow().strftime("%Y-%m-%d"),
@@ -319,7 +312,7 @@ async def riconcilia_f24(
         prov_id = prov["_id"]
         # Inserisci in prima nota banca
         await db["prima_nota_banca"].insert_one({
-            "_id":          str(uuid.uuid4()),
+            "_id":          new_id(),
             "tipo":         "uscita",
             "importo":      totale,
             "data":         body.data_pagamento,

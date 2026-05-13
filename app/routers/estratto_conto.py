@@ -14,28 +14,21 @@ Logica riconciliazione:
     3. (opzionale) keyword in descrizione
   Se trovato → sposta provvisorio in prima_nota_banca.
 """
-import uuid
 import csv
 import io
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Request, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
 from app.routers.auth import verify_token
 from app.database import get_db, col_estratto_conto
+from app.utils import serialize_doc as _ser, new_id
 
 router = APIRouter(prefix="/api/estratto-conto", tags=["estratto_conto"])
 
 SOGLIA_IMPORTO = 0.50   # €
 SOGLIA_GIORNI  = 5
-
-
-def _ser(doc):
-    if not doc:
-        return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
 
 
 def _safe_float(s: str) -> float:
@@ -200,7 +193,7 @@ async def _riconcilia_movimento(db, mov_id: str, mov: dict) -> dict:
         prov_id = prov["_id"]
         # Sposta in prima nota banca
         banca_doc = {
-            "_id":          str(uuid.uuid4()),
+            "_id":          new_id(),
             "tipo":         tipo,
             "importo":      importo,
             "data":         mov["data"],
@@ -285,7 +278,7 @@ async def import_estratto(
             saltati += 1
             continue
 
-        mov_id = str(uuid.uuid4())
+        mov_id = new_id()
         doc = {
             "_id":          mov_id,
             "data":         mov["data"],
@@ -330,7 +323,6 @@ async def lista_estratto(
     limit:        int            = Query(500),
 ):
     verify_token(request)
-    db     = get_db()
     filtro: dict = {}
     if riconciliato is not None:
         filtro["riconciliato"] = riconciliato
@@ -366,7 +358,7 @@ async def riconcilia_manuale(request: Request, mov_id: str, body: RiconciliaManu
         raise HTTPException(status_code=404, detail="Movimento non trovato")
 
     banca_doc = {
-        "_id":          str(uuid.uuid4()),
+        "_id":          new_id(),
         "tipo":         mov["tipo"],
         "importo":      mov["importo"],
         "data":         mov["data"],

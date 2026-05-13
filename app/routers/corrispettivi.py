@@ -13,7 +13,6 @@ Gestisce:
      → Se A ≠ B ≠ C → ALERT discrepanza (evita sanzioni AdE)
   4. KPI ricavi per bilancio (RICAVI = solo corrispettivi)
 """
-import uuid
 from datetime import datetime, date, timedelta
 from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Query
@@ -21,26 +20,14 @@ from pydantic import BaseModel
 
 from app.routers.auth import verify_token
 from app.database import (
-    col_corrispettivi, col_pn_cassa, col_pn_banca, col_estratto_conto
+    col_corrispettivi, col_pn_cassa, col_estratto_conto
 )
 from app.services.corrispettivi_parser import parse_corrispettivo_xml
+from app.utils import serialize_doc as _ser, new_id as _nuovo_id
 
 router = APIRouter(prefix="/api/corrispettivi", tags=["corrispettivi"])
 
-# Soglia in euro per considerare una discrepanza "accettabile"
-# (il POS accredita il giorno successivo → differenza fisiologica)
 SOGLIA_DISCREPANZA = 5.0
-
-
-def _ser(doc):
-    if not doc:
-        return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
-
-
-def _nuovo_id() -> str:
-    return str(uuid.uuid4())
 
 
 # ── POST /api/corrispettivi/import-xml ────────────────────────────────────────

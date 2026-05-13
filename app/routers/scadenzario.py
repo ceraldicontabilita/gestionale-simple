@@ -18,11 +18,6 @@ from app.database import get_db
 router = APIRouter(prefix="/api/scadenzario", tags=["scadenzario"])
 
 
-def _ser(doc):
-    if not doc:
-        return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
 
 
 @router.get("")
@@ -90,7 +85,7 @@ async def scadenzario_unificato(
                 "scadenza":    scad[:10],
                 "giorni":      gg,
                 "urgente":     gg <= 7,
-                "link":        f"/cedolini/f24",
+                "link":        "/cedolini/f24",
             })
 
     # ── 3. Verbali da pagare ──────────────────────────────────────────────────
@@ -114,7 +109,7 @@ async def scadenzario_unificato(
                 "scadenza":    scad[:10],
                 "giorni":      gg,
                 "urgente":     gg <= 7,
-                "link":        f"/verbali",
+                "link":        "/verbali",
             })
 
     # ── 4. Scadenze veicoli ───────────────────────────────────────────────────
@@ -145,7 +140,7 @@ async def scadenzario_unificato(
                         "scadenza":    scad[:10],
                         "giorni":      gg,
                         "urgente":     gg <= 7,
-                        "link":        f"/veicoli",
+                        "link":        "/veicoli",
                     })
 
     # ── 5. Corrispettivi con discrepanza POS non risolta ──────────────────────
@@ -164,7 +159,7 @@ async def scadenzario_unificato(
                 "scadenza":    d.get("data", ""),
                 "giorni":      0,
                 "urgente":     True,
-                "link":        f"/corrispettivi",
+                "link":        "/corrispettivi",
             })
 
     # Ordina per giorni mancanti

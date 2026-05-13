@@ -2,7 +2,6 @@
 Router Fornitori — Ceraldi Group ERP
 Anagrafica fornitori + metodo pagamento + lookup AI categoria IVA.
 """
-import uuid
 import os
 from datetime import datetime
 from typing import Optional
@@ -13,16 +12,11 @@ import httpx
 from app.routers.auth import verify_token
 from app.database import col_fornitori, col_invoices
 from app.services.ai_parser import classifica_fornitore_da_piva
+from app.utils import serialize_doc as _ser, new_id
 
 router = APIRouter(prefix="/api/fornitori", tags=["fornitori"])
 
 OPENAPI_TOKEN = os.getenv("OPENAPI_TOKEN", "")
-
-
-def _ser(doc):
-    if not doc: return {}
-    from bson import ObjectId
-    return {k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()}
 
 
 # ── GET /api/fornitori ────────────────────────────────────────────────────────
@@ -110,7 +104,7 @@ async def crea_fornitore(request: Request, body: NuovoFornitore):
         raise HTTPException(status_code=409, detail="Fornitore già presente")
 
     doc = {
-        "_id":            str(uuid.uuid4()),
+        "_id":            new_id(),
         "partita_iva":    body.partita_iva,
         "ragione_sociale": body.ragione_sociale,
         "codice_fiscale": body.codice_fiscale or "",

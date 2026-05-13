@@ -10,7 +10,6 @@ Regole fondamentali (da spec operativa):
  5. Metodo non definito → stato "da_classificare" + alert
  6. Nessuna scrittura DB nelle chiamate GET
 """
-import uuid
 from datetime import datetime, date, timedelta
 from typing import Optional
 
@@ -25,27 +24,9 @@ from app.database import (
 )
 from app.services.xml_parser import parse_file
 from app.services.prima_nota_auto import smista_fattura
+from app.utils import serialize_doc as _ser, new_id
 
 router = APIRouter(prefix="/api/fatture", tags=["fatture"])
-
-
-# ── Serializzazione ───────────────────────────────────────────────────────────
-
-def _ser(doc: dict) -> dict:
-    if not doc:
-        return {}
-    out = {}
-    for k, v in doc.items():
-        if isinstance(v, ObjectId):
-            out[k] = str(v)
-        elif isinstance(v, list):
-            out[k] = [_ser(i) if isinstance(i, dict) else
-                      str(i) if isinstance(i, ObjectId) else i for i in v]
-        elif isinstance(v, dict):
-            out[k] = _ser(v)
-        else:
-            out[k] = v
-    return out
 
 
 # ── Fornitore: trova o crea ───────────────────────────────────────────────────
@@ -79,7 +60,7 @@ async def _trova_o_crea_fornitore(fattura: dict) -> tuple[dict, bool]:
 
     # Crea con dati minimi dall'XML
     nuovo: dict = {
-        "_id":              str(uuid.uuid4()),
+        "_id":              new_id(),
         "partita_iva":      piva,
         "codice_fiscale":   cf,
         "ragione_sociale":  nome,
@@ -264,7 +245,7 @@ async def import_xml(request: Request, file: UploadFile = File(...)):
     # Stato iniziale
     fattura["stato"]                  = "da_pagare" if metodo else "da_classificare"
     fattura["source"]                 = "upload"
-    fattura["_id"]                    = str(uuid.uuid4())
+    fattura["_id"]                    = new_id()
     fattura["alert_fornitore_nuovo"]  = creato
     fattura["alert_metodo_mancante"]  = not bool(metodo)
 
@@ -327,7 +308,7 @@ async def import_xml_bulk(request: Request, files: list[UploadFile] = File(...))
 
         fattura["stato"]                 = "da_pagare" if metodo else "da_classificare"
         fattura["source"]                = "upload"
-        fattura["_id"]                   = str(uuid.uuid4())
+        fattura["_id"]                   = new_id()
         fattura["alert_fornitore_nuovo"] = creato
         fattura["alert_metodo_mancante"] = not bool(metodo)
 
