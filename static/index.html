@@ -1351,7 +1351,10 @@ async function riconciliaAll(){
    PAGE: CORRISPETTIVI
 ═══════════════════════════════════════════════════════ */
 PAGES['corrispettivi']=async function(){
-  $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalNuovoCorr()">+ Nuovo</button>`;
+  $('tb-actions').innerHTML=`
+    <button class="btn btn-ghost btn-sm" onclick="$('corr-xml-file').click()">📥 Importa XML</button>
+    <input id="corr-xml-file" type="file" accept=".xml" multiple style="display:none" onchange="uploadCorrXML(this)">
+    <button class="btn btn-primary btn-sm" onclick="modalNuovoCorr()">+ Nuovo</button>`;
   $('content').innerHTML=`
     <div class="flex gap-3 mb-5">
       <select id="co-anno" class="inp" style="width:110px" onchange="loadCorr()">
@@ -1446,9 +1449,39 @@ function modalAggiornaPOS(id, attuale){
 }
 async function salvaPosBanca(id){
   try{
-    await POST(`/api/corrispettivi/${id}/pos-dichiarato`,{importo_dichiarato:+$('pos-imp').value||0});
+    await POST(`/api/corrispettivi/${id}/pos-dichiarato`,{importo:+$('pos-imp').value||0});
     ok('POS aggiornato'); closeModal(); loadCorr();
   }catch(e){err(e.message);}
+}
+async function uploadCorrXML(input){
+  const files=[...(input.files||[])];
+  if(!files.length)return;
+  const el=$('co-body'); if(el)el.innerHTML=loading();
+  let nOk=0,nDup=0,nErr=0;
+  const msgs=[];
+  for(const f of files){
+    const fd=new FormData(); fd.append('file',f);
+    try{
+      const r=await POST('/api/corrispettivi/import-xml',fd,true);
+      if(r.esito==='importato'){
+        nOk++;
+        msgs.push(`✓ ${r.data} — Totale: ${euro(r.totale)} · Contanti: ${euro(r.contanti||0)} · POS: ${euro(r.elettronico||0)}`);
+      }else if(r.esito==='duplicato'){
+        nDup++;
+        msgs.push(`⊟ ${r.data} già presente`);
+      }else{
+        nErr++;
+        msgs.push(`✗ ${f.name}: ${JSON.stringify(r)}`);
+      }
+    }catch(e){nErr++;msgs.push(`✗ ${f.name}: ${e.message}`);}
+  }
+  input.value='';
+  if(nOk>0){ok(`${nOk} corrispettivi importati`);loadCorr();}
+  else if(el)loadCorr();
+  if(msgs.length){
+    const summary=`<div class="card" style="margin-top:12px"><div style="font-weight:700;margin-bottom:8px">Risultato importazione: ${nOk} importati · ${nDup} duplicati · ${nErr} errori</div><ul style="margin:0;padding-left:18px;font-size:13px">${msgs.map(m=>`<li>${m}</li>`).join('')}</ul></div>`;
+    if(el)el.insertAdjacentHTML('beforeend',summary);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════

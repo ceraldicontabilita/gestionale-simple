@@ -66,23 +66,114 @@ def _safe_float(s: str) -> float:
 def _parse_data(raw: str) -> str:
     """Normalizza la data in formato YYYY-MM-DD."""
     raw = raw.strip()
-    # ISO datetime: 2026-01-24T23:59:00
     if "T" in raw:
         raw = raw.split("T")[0]
-    # Già formato YYYY-MM-DD
     if len(raw) == 10 and raw[4] == "-":
         return raw
-    # GG/MM/YYYY
     if "/" in raw and len(raw) == 10:
         parts = raw.split("/")
         return f"{parts[2]}-{parts[1]}-{parts[0]}"
     return raw
 
 
+def _parse_cor10(root: ET.Element, xml_hash: str) -> dict:
+    """Parsa formato COR10 (DatiCorrispettivi — AdE standard v1.0)."""
+    # Data: preferisce DataOraRilevazione; per giorni inattivi usa PeriodoInattivo/Dal
+    data_raw = ""
+    periodo_inattivo = bool(_find_all(root, "PeriodoInattivo"))
+    if periodo_inattivo:
+        dal_nodes = _find_all(root, "Dal")
+        if dal_nodes:
+            data_raw = (dal_nodes[0].text or "").strip()
+    if not data_raw:
+        for tname in ["DataOraRilevazione", "DataOraTrasmissione"]:
+            nodes = _find_all(root, tname)
+            if nodes and nodes[0].text:
+                data_raw = (nodes[0].text or "").strip()
+                break
+
+    data = _parse_data(data_raw) if data_raw else datetime.utcnow().strftime("%Y-%m-%d")
+    anno = int(data[:4]) if data and len(data) >= 4 else 0
+
+    progressivo = ""
+    prog_nodes = _find_all(root, "Progressivo")
+    if prog_nodes:
+        progressivo = (prog_nodes[0].text or "").strip()
+
+    matricola_rt = ""
+    id_nodes = _find_all(root, "IdDispositivo")
+    if id_nodes:
+        matricola_rt = (id_nodes[0].text or "").strip()
+
+    # Pagamenti da DatiRT/Totali
+    contanti    = 0.0
+    elettronico = 0.0
+    n_doc       = 0
+    totali_nodes = _find_all(root, "Totali")
+    if totali_nodes:
+        t = totali_nodes[0]
+        for child in t:
+            local = (child.tag.split("}")[-1] if "}" in child.tag else child.tag).upper()
+            if local == "PAGATOCONTANTI":
+                contanti = _safe_float(child.text or "0")
+            elif local == "PAGATOELETTRONICO":
+                elettronico = _safe_float(child.text or "0")
+            elif local == "NUMERODOCCOMMERCIALI":
+                n_doc = int(_safe_float(child.text or "0"))
+
+    totale = round(contanti + elettronico, 2)
+
+    # IVA da DatiRT/Riepilogo
+    totale_imponibile = 0.0
+    totale_iva        = 0.0
+    aliquote_iva      = []
+    for riep in _find_all(root, "Riepilogo"):
+        ammontare = _safe_float(_tag(riep, "Ammontare"))
+        iva_els = [c for c in riep if (c.tag.split("}")[-1] if "}" in c.tag else c.tag).upper() == "IVA"]
+        if iva_els:
+            aliquota = _safe_float(_tag(iva_els[0], "AliquotaIVA"))
+            imposta  = _safe_float(_tag(iva_els[0], "Imposta"))
+        else:
+            aliquota = 0.0
+            imposta  = 0.0
+        totale_imponibile += ammontare
+        totale_iva        += imposta
+        if aliquota > 0 and ammontare > 0:
+            aliquote_iva.append({
+                "aliquota":   aliquota,
+                "imponibile": round(ammontare, 2),
+                "imposta":    round(imposta, 2),
+            })
+
+    return {
+        "xml_hash":           xml_hash,
+        "data":               data,
+        "anno":               anno,
+        "numero_documento":   progressivo,
+        "matricola_rt":       matricola_rt,
+        "numero_doc_comm":    n_doc,
+        "periodo_inattivo":   periodo_inattivo,
+        "totale":             totale,
+        "totale_imponibile":  round(totale_imponibile, 2),
+        "totale_iva":         round(totale_iva, 2),
+        "contanti":           round(contanti, 2),
+        "elettronico":        round(elettronico, 2),
+        "altri":              0.0,
+        "aliquote_iva":       aliquote_iva,
+        "pos_dichiarato":     None,
+        "pos_banca":          None,
+        "discrepanza":        None,
+        "prima_nota_cassa_id":      None,
+        "prima_nota_uscita_pos_id": None,
+        "source":             "xml_cor10",
+        "created_at":         datetime.utcnow().isoformat(),
+    }
+
+
 def parse_corrispettivo_xml(xml_bytes: bytes) -> dict:
     """
     Parsa un XML di corrispettivi giornalieri dal registratore telematico.
-    Ritorna dict pronto per inserimento in collection 'corrispettivi'.
+    Supporta sia il vecchio formato RT sia il formato COR10 (AdE v1.0).
     """
     xml_hash = hashlib.md5(xml_bytes).hexdigest()
 
@@ -91,7 +182,13 @@ def parse_corrispettivo_xml(xml_bytes: bytes) -> dict:
     except ET.ParseError as e:
         raise ValueError(f"XML corrispettivi non valido: {e}")
 
-    # ── Data documento ────────────────────────────────────────────────────────
+    # Rilevamento formato COR10 (DatiCorrispettivi)
+    root_local = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+    versione   = root.get("versione", "")
+    if root_local.upper() == "DATICORRISPETTIVI" or "COR" in versione.upper():
+        return _parse_cor10(root, xml_hash)
+
+    # ── Vecchio formato RT — Data documento ───────────────────────────────────
     data_raw = ""
     for tag_name in ["DataOraDocumento", "DataDocumento", "Data", "DataRiferimento"]:
         nodes = _find_all(root, tag_name)
