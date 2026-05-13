@@ -246,20 +246,22 @@ async def import_estratto(
     else:
         raise HTTPException(status_code=400, detail="Encoding file non riconosciuto")
 
-    # Parse
+    # Parse — prova sempre tutti i parser in cascata finché uno produce risultati
     fname_lower = file.filename.lower()
-    if banca == "bpm" or "bpm" in fname_lower or "bancobpm" in fname_lower:
-        movimenti = _parse_bpm(content)
-    elif banca == "unicredit" or "unicredit" in fname_lower:
+    if banca == "unicredit" or "unicredit" in fname_lower:
         movimenti = _parse_unicredit(content)
+        if not movimenti: movimenti = _parse_bpm(content)
+        if not movimenti: movimenti = _parse_generic(content)
+    elif banca == "bpm" or "bpm" in fname_lower or "bancobpm" in fname_lower:
+        movimenti = _parse_bpm(content)
+        if not movimenti: movimenti = _parse_generic(content)
     else:
-        movimenti = _parse_generic(content)
-        # Se generic non produce nulla, prova BPM come fallback
-        if not movimenti:
-            movimenti = _parse_bpm(content)
+        movimenti = _parse_bpm(content)
+        if not movimenti: movimenti = _parse_generic(content)
+        if not movimenti: movimenti = _parse_unicredit(content)
 
     if not movimenti:
-        raise HTTPException(status_code=422, detail="Nessun movimento estratto dal file")
+        raise HTTPException(status_code=422, detail="Nessun movimento estratto dal file — verifica che sia un CSV con colonne data/importo")
 
     db = get_db()
     inseriti     = 0
