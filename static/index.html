@@ -470,7 +470,7 @@ PAGES['dashboard']=async function(){
   const anno=new Date().getFullYear();
   try{
     const [sum,scad]=await Promise.all([GET(`/api/dashboard/summary?anno=${anno}`),GET('/api/scadenzario?giorni=14')]);
-    const urgent=(scad||[]).filter(x=>x.urgente||x.giorni<=3);
+    const urgent=(scad?.scadenze||scad||[]).filter(x=>x.urgente||x.giorni<=3);
     c.innerHTML=`
     <!-- KPI -->
     <div class="kpi-grid">
@@ -592,7 +592,8 @@ async function loadScad(g,btn){
   const el=$('scad-body'); if(!el)return;
   el.innerHTML=loading();
   try{
-    const data=await GET(`/api/scadenzario?giorni=${g}`);
+    const raw=await GET(`/api/scadenzario?giorni=${g}`);
+    const data=raw?.scadenze||raw||[];
     if(!data?.length){el.innerHTML=`<div class="card">${emptyState('🎉','Nessuna scadenza nei prossimi '+g+' giorni','Tutto in regola!')}</div>`;return;}
     el.innerHTML=`<div class="tbl-wrap">
       <div class="tbl-summary"><span>${data.length} scadenze</span></div>
@@ -612,7 +613,7 @@ async function loadScad(g,btn){
    PAGE: FATTURE
 ═══════════════════════════════════════════════════════ */
 PAGES['fatture']=async function(){
-  $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML/P7M</button>`;
+  $('tb-actions').innerHTML=`<button class="btn btn-ghost btn-sm" onclick="fixDatiFatture()" title="Riempie fornitore e ricalcola imponibile/IVA per fatture vecchie">🔧 Fix dati</button> <button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML/P7M</button>`;
   $('content').innerHTML=`
     <div class="card card-body mb-5">
       <div class="flex gap-3 flex-wrap items-end">
@@ -676,6 +677,14 @@ async function loadFatture(){
 function _metodoLabel(m){
   const map={'MP01':'Contanti','MP02':'Assegno','MP05':'Bonifico','MP08':'Carta','banca':'Bonifico','cassa':'Contanti','assegno':'Assegno'};
   return map[m]||m||'';
+}
+async function fixDatiFatture(){
+  warn('Fix dati in corso...');
+  try{
+    const r=await POST('/api/fatture/fix-data',{});
+    ok(`Fix completato: ${r.fixed_nome} fornitori aggiornati, ${r.fixed_importi} importi ricalcolati`);
+    loadFatture();
+  }catch(e){err(e.message);}
 }
 
 function modalEditFattura(id, nome, metodo, scadenza, stato){
@@ -804,13 +813,13 @@ async function loadFornitori(){
       <div class="tbl-summary"><span>${list.length} fornitori</span></div>
       <table><thead><tr><th>Denominazione</th><th>P.IVA</th><th>Categoria</th><th>IVA Ded.</th><th>Fatturato</th><th></th></tr></thead>
       <tbody>${list.map(f=>`<tr>
-        <td style="font-weight:600">${f.denominazione||f.nome||'–'}</td>
-        <td class="font-mono">${f.piva||'–'}</td>
-        <td>${f.categoria?badge(f.categoria):'–'}</td>
-        <td>${f.detraibilita_iva_pct!=null?`<span style="font-weight:700">${f.detraibilita_iva_pct}%</span>`:'–'}</td>
-        <td style="font-weight:600">${euro(f.totale_fatturato)}</td>
+        <td style="font-weight:600">${f.ragione_sociale||f.denominazione||f.nome||'–'}</td>
+        <td class="font-mono">${f.partita_iva||f.piva||'–'}</td>
+        <td>${(f.categoria_iva||f.categoria)?badge(f.categoria_iva||f.categoria):'–'}</td>
+        <td>${f.detraibilita_default_pct!=null?`<span style="font-weight:700">${f.detraibilita_default_pct}%</span>`:f.detraibilita_iva_pct!=null?`<span style="font-weight:700">${f.detraibilita_iva_pct}%</span>`:'–'}</td>
+        <td style="font-weight:600">${f.fatture_anno!=null?f.fatture_anno+' fatt.':'–'}</td>
         <td style="text-align:right">
-          <button class="btn btn-ghost btn-xs" onclick="runAiPiva('${f._id}')">🤖 AI</button>
+          <button class="btn btn-ghost btn-xs" onclick="runAiClassifica('${f.partita_iva||f._id}')">🤖 AI</button>
         </td>
       </tr>`).join('')}</tbody></table></div>`;
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
@@ -832,10 +841,10 @@ function modalNuovoFornitore(){
   </div>`);
 }
 async function saveFornitore(){
-  try{await POST('/api/fornitori',{denominazione:$('nf-nome').value,piva:$('nf-piva').value,codice_fiscale:$('nf-cf').value,categoria:$('nf-cat').value,detraibilita_iva_pct:$('nf-ded').value?+$('nf-ded').value:null,iban:$('nf-iban').value});ok('Fornitore salvato');closeModal();loadFornitori();}
+  try{await POST('/api/fornitori',{ragione_sociale:$('nf-nome').value,partita_iva:$('nf-piva').value,codice_fiscale:$('nf-cf').value,categoria_iva:$('nf-cat').value,detraibilita_default_pct:$('nf-ded').value?+$('nf-ded').value:null,iban:$('nf-iban').value});ok('Fornitore salvato');closeModal();loadFornitori();}
   catch(e){err(e.message);}
 }
-async function runAiPiva(id){warn('Ricerca AI P.IVA...');try{await POST(`/api/fornitori/${id}/lookup-piva`);ok('Aggiornato via AI');loadFornitori();}catch(e){err(e.message);}}
+async function runAiClassifica(piva){warn('Classificazione AI...');try{await POST(`/api/fornitori/${piva}/classifica-iva`);ok('Classificazione AI completata');loadFornitori();}catch(e){err(e.message);}}
 
 /* ═══════════════════════════════════════════════════════
    PAGE: PRIMA NOTA
