@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from bson import ObjectId
 
 from app.routers.auth import verify_token
-from app.database import col_invoices, col_fornitori, col_scadenzario
+from app.database import col_invoices, col_fornitori
 from app.services.xml_parser import parse_file
 from app.services.prima_nota_auto import smista_fattura
 

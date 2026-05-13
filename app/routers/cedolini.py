@@ -165,7 +165,7 @@ async def upload_f24(
 
     # Salva F24
     f24_id = str(uuid.uuid4())
-    await db["f24"].insert_one({
+    await db["f24_commercialista"].insert_one({
         "_id":            f24_id,
         "scadenza":       scadenza,
         "periodo":        periodo,
@@ -271,7 +271,7 @@ async def lista_f24(
     if stato:
         filtro["stato"] = stato
 
-    cursor = db["f24"].find(filtro).sort("scadenza", -1)
+    cursor = db["f24_commercialista"].find(filtro).sort("scadenza", -1)
     docs   = await cursor.to_list(length=200)
     return {"f24": [_ser(d) for d in docs], "totale": len(docs)}
 
@@ -296,14 +296,14 @@ async def riconcilia_f24(
     """
     verify_token(request)
     db  = get_db()
-    f24 = await db["f24"].find_one({"_id": f24_id})
+    f24 = await db["f24_commercialista"].find_one({"_id": f24_id})
     if not f24:
         raise HTTPException(status_code=404, detail="F24 non trovato")
 
     totale = f24.get("totale", 0.0)
 
     # Aggiorna F24
-    await db["f24"].update_one(
+    await db["f24_commercialista"].update_one(
         {"_id": f24_id},
         {"$set": {
             "stato":           "pagato",
@@ -405,7 +405,7 @@ async def cerca_f24_estratto(request: Request, f24_id: str):
     """
     verify_token(request)
     db  = get_db()
-    f24 = await db["f24"].find_one({"_id": f24_id})
+    f24 = await db["f24_commercialista"].find_one({"_id": f24_id})
     if not f24:
         raise HTTPException(status_code=404, detail="F24 non trovato")
 

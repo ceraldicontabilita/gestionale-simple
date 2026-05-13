@@ -450,7 +450,7 @@ function go(page){
 async function loadScadBadge(){
   try{
     const data=await GET('/api/scadenzario?giorni=7');
-    const n=(data||[]).filter(x=>x.urgente).length;
+    const n=(data?.scadenze||[]).filter(x=>x.urgente).length;
     const el=$('sb-badge');
     el.textContent=n; el.classList.toggle('hidden',n===0);
   }catch{}

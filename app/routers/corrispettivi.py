@@ -115,7 +115,8 @@ async def _crea_movimenti_prima_nota(corr: dict) -> dict:
       2. USCITA: quota POS (che fisicamente va in banca il giorno dopo)
     Il saldo cassa risultante = solo i contanti effettivi rimasti in cassa.
     """
-    anno = corr.get("anno", 0)
+    from datetime import datetime as _dt
+    anno = corr.get("anno") or (int(corr.get("data", "")[:4]) if corr.get("data") else _dt.now().year)
     data = corr.get("data", "")
     totale      = corr.get("totale", 0.0)
     elettronico = corr.get("elettronico", 0.0)
