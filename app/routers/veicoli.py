@@ -23,7 +23,7 @@ def _ser(doc):
 
 
 def col_v():
-    return get_db()["veicoli"]
+    return get_db()["veicoli_noleggio"]
 
 
 # ── GET /api/veicoli ──────────────────────────────────────────────────────────

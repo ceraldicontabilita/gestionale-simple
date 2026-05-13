@@ -198,7 +198,7 @@ async def _inserisci_f24(dati: dict, doc_id: str) -> dict:
         "stato":       "da_pagare",
         "created_at":  datetime.utcnow().isoformat(),
     }
-    await db["f24"].insert_one(f24_doc)
+    await db["f24_commercialista"].insert_one(f24_doc)
 
     # Crea movimento provvisorio in prima nota banca (USCITA)
     if totale > 0:
