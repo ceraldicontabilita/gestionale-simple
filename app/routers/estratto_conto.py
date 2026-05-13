@@ -96,6 +96,46 @@ def _parse_unicredit(content: str) -> List[dict]:
     return movimenti
 
 
+def _parse_bpm(content: str) -> List[dict]:
+    """Parser CSV Banco BPM.
+    Header: Ragione Sociale;Data contabile;Data valuta;Banca;Rapporto;Importo;Divisa;Descrizione;Categoria/sottocategoria;Hashtag
+    Indici:  0              1              2            3     4        5       6      7            8                       9
+    Importo è con segno: negativo=uscita, positivo=entrata. Decimali con virgola.
+    """
+    movimenti = []
+    reader = csv.reader(io.StringIO(content), delimiter=";", quotechar='"')
+    rows = list(reader)
+    for row in rows[1:]:   # salta header
+        if len(row) < 8:
+            continue
+        try:
+            raw_date = row[2].strip() or row[1].strip()
+            data = _parse_date(raw_date)
+            if not data:
+                continue
+            importo_raw = row[5].strip().replace('"', '').replace('\xa0', '').replace(' ', '')
+            if not importo_raw:
+                continue
+            # Formato europeo: punti come separatore migliaia, virgola come decimale
+            importo_signed = float(importo_raw.replace('.', '').replace(',', '.'))
+            if importo_signed == 0:
+                continue
+            tipo    = "entrata" if importo_signed > 0 else "uscita"
+            importo = abs(importo_signed)
+            descrizione = row[7].strip() if len(row) > 7 else ""
+            categoria   = row[8].strip() if len(row) > 8 else ""
+            movimenti.append({
+                "data":        data,
+                "descrizione": descrizione,
+                "tipo":        tipo,
+                "importo":     importo,
+                "categoria":   categoria,
+            })
+        except Exception:
+            continue
+    return movimenti
+
+
 def _parse_generic(content: str) -> List[dict]:
     """Parser CSV generico: prova separatori , ; tab"""
     for sep in (";", ",", "\t"):
@@ -214,10 +254,16 @@ async def import_estratto(
         raise HTTPException(status_code=400, detail="Encoding file non riconosciuto")
 
     # Parse
-    if banca == "unicredit" or "unicredit" in file.filename.lower():
+    fname_lower = file.filename.lower()
+    if banca == "bpm" or "bpm" in fname_lower or "bancobpm" in fname_lower:
+        movimenti = _parse_bpm(content)
+    elif banca == "unicredit" or "unicredit" in fname_lower:
         movimenti = _parse_unicredit(content)
     else:
         movimenti = _parse_generic(content)
+        # Se generic non produce nulla, prova BPM come fallback
+        if not movimenti:
+            movimenti = _parse_bpm(content)
 
     if not movimenti:
         raise HTTPException(status_code=422, detail="Nessun movimento estratto dal file")

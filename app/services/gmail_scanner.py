@@ -14,7 +14,7 @@ from typing import Optional
 
 from app.database import get_db
 
-GMAIL_USER     = os.getenv("GMAIL_USER", "")
+GMAIL_USER     = os.getenv("GMAIL_EMAIL", os.getenv("GMAIL_USER", ""))
 GMAIL_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
 
 # ── Mittenti attendibili ───────────────────────────────────────────────────────
@@ -333,7 +333,9 @@ async def scan_gmail(giorni_indietro: int = 14, forza_riprocessa: bool = False) 
     }
 
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        imap_host = os.getenv("GMAIL_HOST", "imap.gmail.com")
+        imap_port = int(os.getenv("GMAIL_PORT", "993"))
+        mail = imaplib.IMAP4_SSL(imap_host, imap_port)
         mail.login(GMAIL_USER, GMAIL_PASSWORD)
     except Exception as e:
         return {"errore": f"Login Gmail fallito: {e}"}
