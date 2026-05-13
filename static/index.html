@@ -642,9 +642,7 @@ function alertBadge(f){
 }
 
 PAGES['fatture'] = async function(){
-  $('tb-actions').innerHTML = `
-    <button class="btn btn-ghost btn-sm" onclick="migrazioneNomiFornitori()" title="Popola nomi fornitori mancanti dall'anagrafica">🔄 Ripara nomi</button>
-    <button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML / P7M</button>`;
+  $('tb-actions').innerHTML = `<button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML / P7M</button>`;
   $('content').innerHTML = `
     <div class="card card-body mb-5">
       <div class="flex gap-3 flex-wrap items-end">
@@ -1029,14 +1027,6 @@ async function pagaFattura(id){
       note:           $('pd-note').value,
     });
     ok('Pagamento registrato'); closeModal(); loadFatture();
-  } catch(e){ err(e.message); }
-}
-
-async function migrazioneNomiFornitori(){
-  try{
-    const r = await POST('/api/fatture/migrazione-nomi', {});
-    ok(`Aggiornate ${r.aggiornate} fatture`);
-    loadFatture();
   } catch(e){ err(e.message); }
 }
 
