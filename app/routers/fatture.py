@@ -177,12 +177,11 @@ async def import_xml(
             "messaggio": "Fattura già presente nel sistema",
         }
 
-    # Metodo pagamento: usa quello dall'XML se presente, altrimenti dall'anagrafica
+    # Metodo pagamento: SEMPRE dall'anagrafica fornitore (l'XML viene ignorato)
     fornitore = await col_fornitori().find_one(
         {"partita_iva": fattura["fornitore_piva"]}
     )
-    metodo_forn = fornitore.get("metodo_pagamento", "") if fornitore else ""
-    metodo = fattura.get("metodo_pagamento_xml") or metodo_forn
+    metodo = fornitore.get("metodo_pagamento", "") if fornitore else ""
     fattura["metodo_pagamento"] = metodo
     fattura["source"] = "upload"
     fattura["_id"] = str(uuid.uuid4())
@@ -245,8 +244,7 @@ async def import_xml_bulk(
             continue
 
         fornitore = await col_fornitori().find_one({"partita_iva": fattura["fornitore_piva"]})
-        metodo_forn = fornitore.get("metodo_pagamento", "") if fornitore else ""
-        metodo = fattura.get("metodo_pagamento_xml") or metodo_forn
+        metodo = fornitore.get("metodo_pagamento", "") if fornitore else ""
         fattura["metodo_pagamento"] = metodo
         fattura["source"] = "upload"
         fattura["_id"] = str(uuid.uuid4())
