@@ -642,7 +642,9 @@ function alertBadge(f){
 }
 
 PAGES['fatture'] = async function(){
-  $('tb-actions').innerHTML = `<button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML / P7M</button>`;
+  $('tb-actions').innerHTML = `
+    <button class="btn btn-ghost btn-sm" onclick="migrazioneNomiFornitori()" title="Popola nomi fornitori mancanti dall'anagrafica">🔄 Ripara nomi</button>
+    <button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML / P7M</button>`;
   $('content').innerHTML = `
     <div class="card card-body mb-5">
       <div class="flex gap-3 flex-wrap items-end">
@@ -1030,6 +1032,14 @@ async function pagaFattura(id){
   } catch(e){ err(e.message); }
 }
 
+async function migrazioneNomiFornitori(){
+  try{
+    const r = await POST('/api/fatture/migrazione-nomi', {});
+    ok(`Aggiornate ${r.aggiornate} fatture`);
+    loadFatture();
+  } catch(e){ err(e.message); }
+}
+
 const _timers={};
 function debounce(fn,ms){ return function(){clearTimeout(_timers[fn]);_timers[fn]=setTimeout(fn,ms);}; }
 
@@ -1069,7 +1079,7 @@ async function loadFornitori(){
       <tbody>${list.map(f=>`<tr style="cursor:pointer" onclick="openFornitore('${f.partita_iva||f._id}','${(f.ragione_sociale||'').replace(/'/g,"&apos;")}')">
         <td style="font-weight:600;max-width:220px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.ragione_sociale||'–'}</div></td>
         <td class="font-mono" style="font-size:12px">${f.partita_iva||'–'}</td>
-        <td style="font-size:12px">${_metodoLabel(f.metodo_pagamento)||'–'}</td>
+        <td style="font-size:12px">${metodoLabel(f.metodo_pagamento)||'–'}</td>
         <td class="font-mono" style="font-size:11px;color:var(--text3)">${f.iban?f.iban.substring(0,18)+'…':'–'}</td>
         <td>${f.categoria_iva?badge(f.categoria_iva):'–'}</td>
         <td style="font-weight:700;color:${f.detraibilita_default_pct>0&&f.detraibilita_default_pct<100?'var(--orange)':'var(--text)'}">${f.detraibilita_default_pct!=null?f.detraibilita_default_pct+'%':'–'}</td>
