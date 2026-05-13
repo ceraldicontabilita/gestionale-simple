@@ -6,9 +6,7 @@ Gestisce INBOX e INBOX.lette. Deduplicazione via xml_hash MD5.
 import os
 import email
 import imaplib
-import hashlib
 from datetime import datetime, timedelta
-from typing import Optional
 from dotenv import load_dotenv
 
 from app.database import col_invoices, col_fornitori, col_pec_inbox

@@ -1324,16 +1324,18 @@ async function loadEstratto(){
     const list=data?.movimenti||data||[];
     if(!list.length){el.innerHTML=`<div class="card">${emptyState('🏦','Nessun movimento importato','Usa "Importa CSV" per caricare l\'estratto conto bancario')}</div>`;return;}
     const pending=list.filter(m=>!m.riconciliato).length;
+    let _acc=0;
+    const _saldi=[...list].reverse().map(m=>{_acc+=(m.tipo==='entrata'?+m.importo:-+m.importo);return _acc;}).reverse();
     el.innerHTML=`
       ${pending>0?`<div class="alert alert-warn mb-4">⚠️ ${pending} movimenti non riconciliati</div>`:''}
       <div class="tbl-wrap">
         <table><thead><tr><th>Data valuta</th><th>Descrizione</th><th>Dare</th><th>Avere</th><th>Saldo</th><th>Stato</th></tr></thead>
-        <tbody>${list.map(m=>`<tr>
+        <tbody>${list.map((m,i)=>`<tr>
           <td>${fmtDate(m.data_valuta||m.data)}</td>
           <td style="max-width:280px;font-size:12px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
           <td style="color:var(--red);font-weight:600">${m.tipo==='uscita'?euro(m.importo):'–'}</td>
           <td style="color:var(--green);font-weight:600">${m.tipo==='entrata'?euro(m.importo):'–'}</td>
-          <td style="font-weight:600">${euro(m.saldo_progressivo)}</td>
+          <td style="font-weight:600;color:${_saldi[i]>=0?'var(--green)':'var(--red)'}">${euro(_saldi[i])}</td>
           <td>${m.riconciliato?'<span class="badge badge-green">✓ Ric.</span>':'<span class="badge badge-yellow">Pending</span>'}</td>
         </tr>`).join('')}</tbody></table></div>`;
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
