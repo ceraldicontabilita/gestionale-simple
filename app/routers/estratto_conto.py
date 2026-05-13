@@ -23,7 +23,7 @@ from fastapi import APIRouter, Request, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
 from app.routers.auth import verify_token
-from app.database import get_db
+from app.database import get_db, col_estratto_conto
 
 router = APIRouter(prefix="/api/estratto-conto", tags=["estratto_conto"])
 
@@ -187,7 +187,7 @@ async def _riconcilia_movimento(db, mov_id: str, mov: dict) -> dict:
     # Cerca nei provvisori
     filtro = {
         "tipo":    tipo,
-        "stato":   "provvisorio",
+        "stato":   {"$in": ["provvisorio", "pending"]},
         "importo": {"$gte": importo - SOGLIA_IMPORTO, "$lte": importo + SOGLIA_IMPORTO},
         "$or": [
             {"data":     {"$gte": d1, "$lte": d2}},
@@ -275,7 +275,7 @@ async def import_estratto(
 
     for mov in movimenti:
         # Dedup per data + importo + descrizione
-        existing = await db["estratto_conto"].find_one({
+        existing = await col_estratto_conto().find_one({
             "data":        mov["data"],
             "importo":     mov["importo"],
             "descrizione": mov["descrizione"],
@@ -306,7 +306,7 @@ async def import_estratto(
             if match.get("riconciliato"):
                 riconciliati += 1
 
-        await db["estratto_conto"].insert_one(doc)
+        await col_estratto_conto().insert_one(doc)
         inseriti += 1
 
     return {
@@ -343,7 +343,7 @@ async def lista_estratto(
         if data_a:
             filtro["data"]["$lte"] = data_a
 
-    cursor = db["estratto_conto"].find(filtro).sort("data", -1).limit(limit)
+    cursor = col_estratto_conto().find(filtro).sort("data", -1).limit(limit)
     docs   = await cursor.to_list(length=limit)
     return {"movimenti": [_ser(d) for d in docs], "totale": len(docs)}
 
@@ -361,7 +361,7 @@ async def riconcilia_manuale(request: Request, mov_id: str, body: RiconciliaManu
     """Riconcilia manualmente un movimento estratto conto."""
     verify_token(request)
     db  = get_db()
-    mov = await db["estratto_conto"].find_one({"_id": mov_id})
+    mov = await col_estratto_conto().find_one({"_id": mov_id})
     if not mov:
         raise HTTPException(status_code=404, detail="Movimento non trovato")
 
@@ -385,7 +385,7 @@ async def riconcilia_manuale(request: Request, mov_id: str, body: RiconciliaManu
         await db["prima_nota_provvisori"].delete_one({"_id": body.prov_id})
 
     # Aggiorna estratto
-    await db["estratto_conto"].update_one(
+    await col_estratto_conto().update_one(
         {"_id": mov_id},
         {"$set": {"riconciliato": True, "banca_doc_id": banca_doc["_id"]}}
     )
@@ -398,14 +398,14 @@ async def riconcilia_tutti(request: Request):
     """Riprova la riconciliazione automatica su tutti i movimenti non ancora riconciliati."""
     verify_token(request)
     db = get_db()
-    cursor = db["estratto_conto"].find({"riconciliato": False}).sort("data", 1)
+    cursor = col_estratto_conto().find({"riconciliato": False}).sort("data", 1)
     docs   = await cursor.to_list(length=2000)
 
     riconciliati = 0
     for doc in docs:
         match = await _riconcilia_movimento(db, str(doc["_id"]), doc)
         if match.get("riconciliato"):
-            await db["estratto_conto"].update_one(
+            await col_estratto_conto().update_one(
                 {"_id": doc["_id"]},
                 {"$set": {
                     "riconciliato": True,

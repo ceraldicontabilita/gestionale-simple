@@ -121,7 +121,7 @@ async def get_banca(
 async def get_provvisori(
     request: Request,
     anno:  Optional[int] = Query(None),
-    stato: str = Query("pending"),   # pending | confermato
+    stato: str = Query("provvisorio"),   # provvisorio | confermato
     limit: int = Query(200),
 ):
     verify_token(request)

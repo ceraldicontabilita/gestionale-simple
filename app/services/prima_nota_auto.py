@@ -143,7 +143,7 @@ async def _registra_provvisorio(
         "tipo_documento":  fattura.get("tipo_documento", ""),
         "iva_importo":     fattura.get("importo_iva", 0.0),
         "motivo_provvisorio": motivo,
-        "stato":           "pending",
+        "stato":           "provvisorio",
         "destinazione":    None,
         "confermato_in_id": None,
         "anno":            fattura.get("anno", 0),
@@ -170,13 +170,14 @@ async def conferma_provvisorio(
     if prov.get("stato") == "confermato":
         raise ValueError("Provvisorio già confermato")
 
-    fattura_id = prov["fattura_id"]
-    fattura    = await col_invoices().find_one({"_id": fattura_id})
+    fattura_id = prov.get("fattura_id")
+    fattura    = await col_invoices().find_one({"_id": fattura_id}) if fattura_id else {}
     if not fattura:
-        raise ValueError(f"Fattura {fattura_id} non trovata")
+        fattura = {}
 
-    data = data_pagamento or prov["data"]
+    data = data_pagamento or prov.get("data", "")
     importo = prov["importo"]
+    _desc = prov.get("descrizione") or f"Fatt. {fattura.get('numero_fattura','')} — {prov.get('fornitore_nome','')}"
 
     if destinazione == "cassa":
         mov_doc = {
@@ -186,9 +187,9 @@ async def conferma_provvisorio(
             "tipo":          "uscita",
             "importo":       importo,
             "segno":         1.0,
-            "descrizione":   f"Fattura {fattura.get('numero_fattura','')} — {prov['fornitore_nome']}",
-            "categoria":     fattura.get("categoria_iva", "generico"),
-            "fornitore_piva": prov["fornitore_piva"],
+            "descrizione":   _desc,
+            "categoria":     fattura.get("categoria_iva", prov.get("categoria", "generico")),
+            "fornitore_piva": prov.get("fornitore_piva", ""),
             "tipo_documento": prov.get("tipo_documento", ""),
             "source":        "conferma_provvisorio",
             "anno":          prov.get("anno", 0),
@@ -206,9 +207,9 @@ async def conferma_provvisorio(
             "tipo":          "uscita",
             "importo":       importo,
             "segno":         1.0,
-            "descrizione":   f"Fattura {fattura.get('numero_fattura','')} — {prov['fornitore_nome']}",
-            "categoria":     fattura.get("categoria_iva", "generico"),
-            "fornitore_piva": prov["fornitore_piva"],
+            "descrizione":   _desc,
+            "categoria":     fattura.get("categoria_iva", prov.get("categoria", "generico")),
+            "fornitore_piva": prov.get("fornitore_piva", ""),
             "tipo_documento": prov.get("tipo_documento", ""),
             "is_assegno":    False,
             "riconciliato":  False,
@@ -239,7 +240,7 @@ async def conferma_provvisorio(
     # Salva metodo sul fornitore per uso futuro
     if salva_metodo_fornitore and prov.get("fornitore_piva"):
         await col_fornitori().update_one(
-            {"partita_iva": prov["fornitore_piva"]},
+            {"partita_iva": prov.get("fornitore_piva", "")},
             {"$set": {"metodo_pagamento": mp_new}}
         )
 
@@ -286,7 +287,7 @@ async def sposta_movimento(
         doc.setdefault("riconciliato", False)
         doc.setdefault("estratto_conto_id", None)
     if a == "provvisori":
-        doc["stato"] = "pending"
+        doc["stato"] = "provvisorio"
 
     await col_a.insert_one(doc)
 
