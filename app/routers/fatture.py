@@ -362,17 +362,55 @@ async def elimina_fattura(request: Request, fattura_id: str):
 # ── POST /api/fatture/fix-data ────────────────────────────────────────────────
 @router.post("/fix-data")
 async def fix_data(request: Request):
-    """Migrazione one-shot: riempie fornitore_nome e ricalcola imponibile/IVA
-    per le fatture importate prima dei fix ai field names."""
+    """Migrazione: aggiorna ragione_sociale nei fornitori dalle fatture,
+    aggiorna fornitore_nome nelle fatture, ricalcola imponibile/IVA."""
     verify_token(request)
 
-    # 1) Recupera mappa piva → ragione_sociale
-    forn_list = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1}).to_list(length=5000)
-    forn_map = {f["partita_iva"]: f.get("ragione_sociale", "") for f in forn_list}
+    # 1) Costruisci mappa piva → nome dalle FATTURE (fonte più affidabile)
+    inv_cursor = col_invoices().find(
+        {"fornitore_piva": {"$nin": ["", None]}, "fornitore_nome": {"$nin": ["", None]}},
+        {"fornitore_piva": 1, "fornitore_nome": 1}
+    )
+    inv_list = await inv_cursor.to_list(length=50000)
+    piva_to_nome = {}
+    for inv in inv_list:
+        piva = inv.get("fornitore_piva", "")
+        nome = inv.get("fornitore_nome", "")
+        if piva and nome and piva not in piva_to_nome:
+            piva_to_nome[piva] = nome
 
-    # 2) Fatture senza fornitore_nome ma con fornitore_piva
-    cursor = col_invoices().find({"fornitore_nome": {"$in": ["", None]}, "fornitore_piva": {"$nin": ["", None]}})
-    docs = await cursor.to_list(length=10000)
+    # 2) Aggiorna ragione_sociale nei FORNITORI che ce l'hanno vuota
+    forn_list = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1, "denominazione": 1}).to_list(length=5000)
+    fixed_fornitori = 0
+    for f in forn_list:
+        piva = f.get("partita_iva", "")
+        rs = f.get("ragione_sociale", "") or f.get("denominazione", "")
+        if not rs and piva and piva in piva_to_nome:
+            await col_fornitori().update_one(
+                {"_id": f["_id"]},
+                {"$set": {"ragione_sociale": piva_to_nome[piva]}}
+            )
+            fixed_fornitori += 1
+        elif not rs and f.get("denominazione"):
+            # copia da campo vecchio
+            await col_fornitori().update_one(
+                {"_id": f["_id"]},
+                {"$set": {"ragione_sociale": f["denominazione"]}}
+            )
+            fixed_fornitori += 1
+
+    # 3) Aggiorna fornitore_nome nelle FATTURE che ce l'hanno vuoto
+    # Ricostruisci mappa aggiornata dai fornitori appena fixati
+    forn_list2 = await col_fornitori().find(
+        {"ragione_sociale": {"$nin": ["", None]}},
+        {"partita_iva": 1, "ragione_sociale": 1}
+    ).to_list(length=5000)
+    forn_map = {f["partita_iva"]: f["ragione_sociale"] for f in forn_list2}
+
+    inv_cursor2 = col_invoices().find(
+        {"fornitore_nome": {"$in": ["", None]}, "fornitore_piva": {"$nin": ["", None]}}
+    )
+    docs = await inv_cursor2.to_list(length=50000)
     fixed_nome = 0
     for d in docs:
         nome = forn_map.get(d.get("fornitore_piva", ""), "")
@@ -380,11 +418,11 @@ async def fix_data(request: Request):
             await col_invoices().update_one({"_id": d["_id"]}, {"$set": {"fornitore_nome": nome}})
             fixed_nome += 1
 
-    # 3) Fatture con importo_totale > 0 ma importo_imponibile == 0
-    cursor2 = col_invoices().find({"importo_totale": {"$gt": 0}, "importo_imponibile": {"$in": [0, 0.0, None]}})
-    docs2 = await cursor2.to_list(length=10000)
+    # 4) Ricalcola imponibile/IVA per fatture con totale > 0 ma imponibile = 0
+    cursor3 = col_invoices().find({"importo_totale": {"$gt": 0}, "importo_imponibile": {"$in": [0, 0.0, None]}})
+    docs3 = await cursor3.to_list(length=50000)
     fixed_importi = 0
-    for d in docs2:
+    for d in docs3:
         totale = float(d.get("importo_totale", 0))
         aliquota = float(d.get("aliquota_iva", 22.0) or 22.0)
         if aliquota > 0:
@@ -404,4 +442,9 @@ async def fix_data(request: Request):
         )
         fixed_importi += 1
 
-    return {"ok": True, "fixed_nome": fixed_nome, "fixed_importi": fixed_importi}
+    return {
+        "ok": True,
+        "fixed_fornitori": fixed_fornitori,
+        "fixed_nome_fatture": fixed_nome,
+        "fixed_importi": fixed_importi,
+    }
