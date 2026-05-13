@@ -46,7 +46,7 @@ def col_corrispettivi():
     return get_db()["corrispettivi"]
 
 def col_estratto_conto():
-    return get_db()["estratto_conto_movimenti"]
+    return get_db()["estratto_conto"]
 
 def col_assegni():
     return get_db()["assegni"]
