@@ -613,7 +613,7 @@ async function loadScad(g,btn){
    PAGE: FATTURE
 ═══════════════════════════════════════════════════════ */
 PAGES['fatture']=async function(){
-  $('tb-actions').innerHTML=`<button class="btn btn-ghost btn-sm" onclick="fixDatiFatture()" title="Riempie fornitore e ricalcola imponibile/IVA per fatture vecchie">🔧 Fix dati</button> <button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML/P7M</button>`;
+  $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML/P7M</button>`;
   $('content').innerHTML=`
     <div class="card card-body mb-5">
       <div class="flex gap-3 flex-wrap items-end">
@@ -677,14 +677,6 @@ async function loadFatture(){
 function _metodoLabel(m){
   const map={'MP01':'Contanti','MP02':'Assegno','MP05':'Bonifico','MP08':'Carta','banca':'Bonifico','cassa':'Contanti','assegno':'Assegno'};
   return map[m]||m||'';
-}
-async function fixDatiFatture(){
-  warn('Fix dati in corso...');
-  try{
-    const r=await POST('/api/fatture/fix-data',{});
-    ok(`Fix completato: ${r.fixed_nome} fornitori aggiornati, ${r.fixed_importi} importi ricalcolati`);
-    loadFatture();
-  }catch(e){err(e.message);}
 }
 
 function modalEditFattura(id, nome, metodo, scadenza, stato){

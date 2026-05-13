@@ -69,17 +69,49 @@ async def lista_fatture(
     docs = await cursor.to_list(length=limit)
     totale = await col_invoices().count_documents(filtro)
 
-    # Arricchisci fornitore_nome dai fornitori per documenti con campo vuoto
-    pive_missing = list({d["fornitore_piva"] for d in docs if not d.get("fornitore_nome") and d.get("fornitore_piva")})
-    if pive_missing:
-        forn_list = await col_fornitori().find(
-            {"partita_iva": {"$in": pive_missing}},
-            {"partita_iva": 1, "ragione_sociale": 1}
-        ).to_list(length=1000)
-        forn_map = {f["partita_iva"]: f.get("ragione_sociale", "") for f in forn_list}
-        for d in docs:
-            if not d.get("fornitore_nome") and d.get("fornitore_piva"):
-                d["fornitore_nome"] = forn_map.get(d["fornitore_piva"], "")
+    # Costruisci mappa piva→nome dai fornitori
+    all_forn = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1}).to_list(length=5000)
+    forn_map = {f.get("partita_iva", ""): f.get("ragione_sociale", "") for f in all_forn if f.get("partita_iva")}
+
+    # Per ogni fattura: arricchisci fornitore_nome e importi se mancanti
+    from app.services.xml_parser import parse_fattura_xml
+    to_update = []
+    for d in docs:
+        piva = d.get("fornitore_piva") or ""
+        nome = d.get("fornitore_nome") or forn_map.get(piva, "")
+
+        # Se ancora vuoto, prova a estrarlo dal raw_xml
+        if not nome and d.get("raw_xml"):
+            try:
+                parsed = parse_fattura_xml(d["raw_xml"].encode("utf-8", errors="replace"))
+                nome = parsed.get("fornitore_nome", "")
+                # Se trovato, aggiorna anche importi mancanti
+                upd = {"fornitore_nome": nome} if nome else {}
+                if not (d.get("importo_imponibile") or 0) and parsed.get("importo_imponibile"):
+                    upd["importo_imponibile"] = parsed["importo_imponibile"]
+                    upd["importo_iva"] = parsed["importo_iva"]
+                    upd["iva_detraibile"] = parsed["iva_detraibile"]
+                if upd:
+                    to_update.append((d["_id"], upd))
+                    d.update(upd)
+            except Exception:
+                pass
+
+        d["fornitore_nome"] = nome
+
+    # Persistenza in background (fire-and-forget)
+    for doc_id, upd in to_update:
+        await col_invoices().update_one({"_id": doc_id}, {"$set": upd})
+        if upd.get("fornitore_nome") and d.get("fornitore_piva"):
+            forn_map[d.get("fornitore_piva")] = upd["fornitore_nome"]
+
+    # Aggiorna ragione_sociale nei fornitori dove manca
+    for piva, nome in forn_map.items():
+        if nome:
+            await col_fornitori().update_one(
+                {"partita_iva": piva, "$or": [{"ragione_sociale": ""}, {"ragione_sociale": None}]},
+                {"$set": {"ragione_sociale": nome}}
+            )
 
     # KPI aggregati
     pipeline_kpi = [
@@ -360,58 +392,3 @@ async def elimina_fattura(request: Request, fattura_id: str):
 
 
 # ── POST /api/fatture/fix-data ────────────────────────────────────────────────
-@router.post("/fix-data")
-async def fix_data(request: Request):
-    verify_token(request)
-    from app.services.xml_parser import parse_fattura_xml
-    fixed = 0
-    errors = 0
-
-    try:
-        all_inv = await col_invoices().find({}).to_list(length=50000)
-        piva_to_nome = {}
-
-        for d in all_inv:
-            raw_xml = d.get("raw_xml") or ""
-            if not raw_xml:
-                continue
-            try:
-                parsed = parse_fattura_xml(raw_xml.encode("utf-8", errors="replace"))
-            except Exception:
-                errors += 1
-                continue
-
-            update = {}
-            if not (d.get("fornitore_nome") or ""):
-                nome = parsed.get("fornitore_nome") or ""
-                if nome:
-                    update["fornitore_nome"] = nome
-            if not (d.get("importo_imponibile") or 0):
-                if parsed.get("importo_imponibile"):
-                    update["importo_imponibile"] = parsed["importo_imponibile"]
-                    update["importo_iva"] = parsed["importo_iva"]
-                    update["iva_detraibile"] = parsed["iva_detraibile"]
-
-            if update:
-                await col_invoices().update_one({"_id": d["_id"]}, {"$set": update})
-                fixed += 1
-
-            piva = parsed.get("fornitore_piva") or d.get("fornitore_piva") or ""
-            nome = update.get("fornitore_nome") or d.get("fornitore_nome") or ""
-            if piva and nome:
-                piva_to_nome[piva] = nome
-
-        # Aggiorna ragione_sociale nei fornitori
-        fixed_fornitori = 0
-        for piva, nome in piva_to_nome.items():
-            r = await col_fornitori().update_one(
-                {"partita_iva": piva, "$or": [{"ragione_sociale": ""}, {"ragione_sociale": None}]},
-                {"$set": {"ragione_sociale": nome}}
-            )
-            if r.modified_count:
-                fixed_fornitori += 1
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore: {str(e)}")
-
-    return {"ok": True, "fatture_fixate": fixed, "fornitori_fixati": fixed_fornitori, "errori": errors}
