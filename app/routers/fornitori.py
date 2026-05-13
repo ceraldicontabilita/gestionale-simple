@@ -10,7 +10,7 @@ from pydantic import BaseModel
 import httpx
 
 from app.routers.auth import verify_token
-from app.database import col_fornitori, col_invoices
+from app.database import col_fornitori, col_invoices, get_db
 from app.services.ai_parser import classifica_fornitore_da_piva
 from app.utils import serialize_doc as _ser, new_id
 
@@ -186,6 +186,130 @@ async def classifica_iva(request: Request, piva: str):
         }}
     )
     return {"ok": True, "classificazione": result}
+
+
+# ── GET /api/fornitori/stats ─────────────────────────────────────────────────
+@router.get("/stats")
+async def fornitori_stats(request: Request):
+    verify_token(request)
+    anno = datetime.now().year
+    totale = await col_fornitori().count_documents({
+        "$or": [{"ragione_sociale": {"$nin": [None, ""]}}, {"partita_iva": {"$nin": [None, ""]}}]
+    })
+    pipeline = [
+        {"$match": {"anno": anno}},
+        {"$group": {"_id": "$fornitore_piva", "totale": {"$sum": "$importo_totale"}, "count": {"$sum": 1}}},
+        {"$sort": {"totale": -1}},
+        {"$limit": 10},
+    ]
+    top_forn = await col_invoices().aggregate(pipeline).to_list(10)
+    return {
+        "totale_fornitori": totale,
+        "anno":             anno,
+        "top_fornitori":    top_forn,
+    }
+
+
+# ── GET /api/fornitori/{piva}/fatture ─────────────────────────────────────────
+@router.get("/{piva}/fatture")
+async def fatture_fornitore(
+    request: Request,
+    piva:    str,
+    anno:    Optional[int] = Query(None),
+    limit:   int           = Query(50),
+):
+    verify_token(request)
+    filtro: dict = {"fornitore_piva": piva}
+    if anno:
+        filtro["anno"] = anno
+    cursor = col_invoices().find(filtro).sort("data_fattura", -1).limit(limit)
+    docs = await cursor.to_list(length=limit)
+    return {"fatture": [_ser(d) for d in docs], "totale": len(docs)}
+
+
+# ── GET /api/fornitori/{piva}/fatturato ───────────────────────────────────────
+@router.get("/{piva}/fatturato")
+async def fatturato_fornitore(request: Request, piva: str):
+    verify_token(request)
+    pipeline = [
+        {"$match": {"fornitore_piva": piva}},
+        {"$group": {
+            "_id":   "$anno",
+            "totale_imponibile": {"$sum": "$importo_imponibile"},
+            "totale_iva":        {"$sum": "$importo_iva"},
+            "totale_fatture":    {"$sum": "$importo_totale"},
+            "count":             {"$sum": 1},
+        }},
+        {"$sort": {"_id": -1}},
+    ]
+    rows = await col_invoices().aggregate(pipeline).to_list(10)
+    return {"per_anno": rows}
+
+
+# ── GET /api/fornitori/{piva}/iban-from-fatture ───────────────────────────────
+@router.get("/{piva}/iban-from-fatture")
+async def iban_from_fatture(request: Request, piva: str):
+    """Estrae l'IBAN dalle ultime fatture XML e lo salva nell'anagrafica."""
+    verify_token(request)
+    cursor = col_invoices().find(
+        {"fornitore_piva": piva, "fornitore_iban": {"$nin": [None, ""]}},
+    ).sort("data_fattura", -1).limit(5)
+    docs = await cursor.to_list(5)
+    if not docs:
+        return {"ok": False, "iban": None, "msg": "Nessun IBAN trovato nelle fatture"}
+    iban = docs[0].get("fornitore_iban", "")
+    if iban:
+        await col_fornitori().update_one(
+            {"partita_iva": piva},
+            {"$set": {"iban": iban, "updated_at": datetime.utcnow().isoformat()}},
+        )
+    return {"ok": bool(iban), "iban": iban}
+
+
+# ── GET /api/fornitori/{piva}/dati-da-fatture ─────────────────────────────────
+@router.get("/{piva}/dati-da-fatture")
+async def dati_da_fatture(request: Request, piva: str):
+    """Aggiorna anagrafica fornitore usando i dati estratti dall'ultima fattura XML."""
+    verify_token(request)
+    last = await col_invoices().find_one(
+        {"fornitore_piva": piva},
+        sort=[("data_fattura", -1)],
+    )
+    if not last:
+        return {"ok": False, "msg": "Nessuna fattura trovata"}
+
+    update: dict = {"updated_at": datetime.utcnow().isoformat()}
+    mapping = {
+        "fornitore_nome":      "ragione_sociale",
+        "fornitore_cf":        "codice_fiscale",
+        "fornitore_indirizzo": "indirizzo",
+        "fornitore_cap":       "cap",
+        "fornitore_citta":     "citta",
+        "fornitore_iban":      "iban",
+    }
+    for src, dst in mapping.items():
+        val = last.get(src, "")
+        if val:
+            update[dst] = val
+
+    if update:
+        await col_fornitori().update_one(
+            {"partita_iva": piva},
+            {"$set": update},
+            upsert=False,
+        )
+    return {"ok": True, "aggiornati": list(update.keys())}
+
+
+# ── GET /api/fornitori/{piva}/scadenze ────────────────────────────────────────
+@router.get("/{piva}/scadenze")
+async def scadenze_fornitore(request: Request, piva: str):
+    verify_token(request)
+    db = get_db()
+    docs = await db["scadenziario_fornitori"].find(
+        {"fornitore_piva": piva, "pagato": {"$ne": True}}
+    ).sort("data_scadenza", 1).to_list(100)
+    return {"scadenze": [_ser(d) for d in docs]}
 
 
 # ── GET /api/fornitori/{piva}/lookup-cciaa ────────────────────────────────────
