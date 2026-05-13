@@ -69,6 +69,18 @@ async def lista_fatture(
     docs = await cursor.to_list(length=limit)
     totale = await col_invoices().count_documents(filtro)
 
+    # Arricchisci fornitore_nome dai fornitori per documenti con campo vuoto
+    pive_missing = list({d["fornitore_piva"] for d in docs if not d.get("fornitore_nome") and d.get("fornitore_piva")})
+    if pive_missing:
+        forn_list = await col_fornitori().find(
+            {"partita_iva": {"$in": pive_missing}},
+            {"partita_iva": 1, "ragione_sociale": 1}
+        ).to_list(length=1000)
+        forn_map = {f["partita_iva"]: f.get("ragione_sociale", "") for f in forn_list}
+        for d in docs:
+            if not d.get("fornitore_nome") and d.get("fornitore_piva"):
+                d["fornitore_nome"] = forn_map.get(d["fornitore_piva"], "")
+
     # KPI aggregati
     pipeline_kpi = [
         {"$match": filtro},
@@ -165,11 +177,12 @@ async def import_xml(
             "messaggio": "Fattura già presente nel sistema",
         }
 
-    # Recupera metodo pagamento fornitore
+    # Metodo pagamento: usa quello dall'XML se presente, altrimenti dall'anagrafica
     fornitore = await col_fornitori().find_one(
         {"partita_iva": fattura["fornitore_piva"]}
     )
-    metodo = fornitore.get("metodo_pagamento", "") if fornitore else ""
+    metodo_forn = fornitore.get("metodo_pagamento", "") if fornitore else ""
+    metodo = fattura.get("metodo_pagamento_xml") or metodo_forn
     fattura["metodo_pagamento"] = metodo
     fattura["source"] = "upload"
     fattura["_id"] = str(uuid.uuid4())
@@ -232,7 +245,8 @@ async def import_xml_bulk(
             continue
 
         fornitore = await col_fornitori().find_one({"partita_iva": fattura["fornitore_piva"]})
-        metodo = fornitore.get("metodo_pagamento", "") if fornitore else ""
+        metodo_forn = fornitore.get("metodo_pagamento", "") if fornitore else ""
+        metodo = fattura.get("metodo_pagamento_xml") or metodo_forn
         fattura["metodo_pagamento"] = metodo
         fattura["source"] = "upload"
         fattura["_id"] = str(uuid.uuid4())
@@ -345,3 +359,51 @@ async def elimina_fattura(request: Request, fattura_id: str):
         {"$set": {"stato": "annullata", "deleted_at": datetime.utcnow().isoformat()}}
     )
     return {"ok": True}
+
+
+# ── POST /api/fatture/fix-data ────────────────────────────────────────────────
+@router.post("/fix-data")
+async def fix_data(request: Request):
+    """Migrazione one-shot: riempie fornitore_nome e ricalcola imponibile/IVA
+    per le fatture importate prima dei fix ai field names."""
+    verify_token(request)
+
+    # 1) Recupera mappa piva → ragione_sociale
+    forn_list = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1}).to_list(length=5000)
+    forn_map = {f["partita_iva"]: f.get("ragione_sociale", "") for f in forn_list}
+
+    # 2) Fatture senza fornitore_nome ma con fornitore_piva
+    cursor = col_invoices().find({"fornitore_nome": {"$in": ["", None]}, "fornitore_piva": {"$nin": ["", None]}})
+    docs = await cursor.to_list(length=10000)
+    fixed_nome = 0
+    for d in docs:
+        nome = forn_map.get(d.get("fornitore_piva", ""), "")
+        if nome:
+            await col_invoices().update_one({"_id": d["_id"]}, {"$set": {"fornitore_nome": nome}})
+            fixed_nome += 1
+
+    # 3) Fatture con importo_totale > 0 ma importo_imponibile == 0
+    cursor2 = col_invoices().find({"importo_totale": {"$gt": 0}, "importo_imponibile": {"$in": [0, 0.0, None]}})
+    docs2 = await cursor2.to_list(length=10000)
+    fixed_importi = 0
+    for d in docs2:
+        totale = float(d.get("importo_totale", 0))
+        aliquota = float(d.get("aliquota_iva", 22.0) or 22.0)
+        if aliquota > 0:
+            imponibile = round(totale / (1 + aliquota / 100), 2)
+            iva = round(totale - imponibile, 2)
+        else:
+            imponibile = totale
+            iva = 0.0
+        detr_pct = float(d.get("detraibilita_pct", 100.0) or 100.0)
+        await col_invoices().update_one(
+            {"_id": d["_id"]},
+            {"$set": {
+                "importo_imponibile": imponibile,
+                "importo_iva": iva,
+                "iva_detraibile": round(iva * detr_pct / 100, 2),
+            }}
+        )
+        fixed_importi += 1
+
+    return {"ok": True, "fixed_nome": fixed_nome, "fixed_importi": fixed_importi}

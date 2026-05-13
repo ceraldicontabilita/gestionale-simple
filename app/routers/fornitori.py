@@ -43,17 +43,30 @@ async def lista_fornitori(
     if metodo:
         filtro["metodo_pagamento"] = metodo
 
-    cursor = col_fornitori().find(filtro).sort("ragione_sociale", 1).limit(limit)
+    from pymongo import ASCENDING
+    cursor = col_fornitori().find(filtro).collation({"locale": "it", "strength": 2}).sort("ragione_sociale", ASCENDING).limit(limit)
     docs = await cursor.to_list(length=limit)
 
-    # Arricchisci con conteggio fatture anno corrente
+    # Arricchisci con totale fatturato e conteggio anno corrente
     anno = datetime.now().year
+    pive = [d.get("partita_iva", "") for d in docs if d.get("partita_iva")]
+    if pive:
+        pipeline = [
+            {"$match": {"fornitore_piva": {"$in": pive}, "anno": anno}},
+            {"$group": {"_id": "$fornitore_piva",
+                        "totale": {"$sum": "$importo_totale"},
+                        "count":  {"$sum": 1}}},
+        ]
+        agg = await col_invoices().aggregate(pipeline).to_list(length=5000)
+        agg_map = {r["_id"]: r for r in agg}
+    else:
+        agg_map = {}
+
     for d in docs:
-        cnt = await col_invoices().count_documents({
-            "fornitore_piva": d.get("partita_iva", ""),
-            "anno": anno,
-        })
-        d["fatture_anno"] = cnt
+        piva = d.get("partita_iva", "")
+        info = agg_map.get(piva, {})
+        d["fatture_anno"] = info.get("count", 0)
+        d["totale_fatturato"] = info.get("totale", 0.0)
 
     return {"fornitori": [_ser(d) for d in docs], "totale": len(docs)}
 
