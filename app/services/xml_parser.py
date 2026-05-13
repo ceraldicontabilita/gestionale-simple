@@ -167,9 +167,11 @@ def parse_fattura_xml(xml_bytes: bytes) -> dict:
         fornitore_cf    = _tag(cn, "CodiceFiscale")
         dati_anag       = _find_all(cn, "DatiAnagrafici")
         if dati_anag:
+            anag = _find_all(dati_anag[0], "Anagrafica")
+            anag_el = anag[0] if anag else dati_anag[0]
             fornitore_nome = (
-                _tag(dati_anag[0], "Denominazione") or
-                f"{_tag(dati_anag[0], 'Nome')} {_tag(dati_anag[0], 'Cognome')}".strip()
+                _tag(anag_el, "Denominazione") or
+                f"{_tag(anag_el, 'Nome')} {_tag(anag_el, 'Cognome')}".strip()
             )
         sede_nodes = _find_all(cn, "Sede")
         if sede_nodes:

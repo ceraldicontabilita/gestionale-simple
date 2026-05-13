@@ -69,28 +69,38 @@ async def lista_fatture(
     docs = await cursor.to_list(length=limit)
     totale = await col_invoices().count_documents(filtro)
 
-    # Costruisci mappa piva→nome dai fornitori
-    all_forn = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1}).to_list(length=5000)
-    forn_map = {f.get("partita_iva", ""): f.get("ragione_sociale", "") for f in all_forn if f.get("partita_iva")}
+    # Costruisci mappa piva→nome dai fornitori (ragione_sociale o campo legacy denominazione)
+    all_forn = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1, "denominazione": 1}).to_list(length=5000)
+    forn_map = {
+        f["partita_iva"]: f.get("ragione_sociale") or f.get("denominazione") or ""
+        for f in all_forn if f.get("partita_iva")
+    }
 
-    # Per ogni fattura: arricchisci fornitore_nome e importi se mancanti
+    # Per ogni fattura: arricchisci fornitore_nome e importi dal raw_xml se mancanti
     from app.services.xml_parser import parse_fattura_xml
     to_update = []
     for d in docs:
         piva = d.get("fornitore_piva") or ""
         nome = d.get("fornitore_nome") or forn_map.get(piva, "")
 
-        # Se ancora vuoto, prova a estrarlo dal raw_xml
+        # Se vuoto, estrai sempre dal raw_xml (fonte autoritativa)
         if not nome and d.get("raw_xml"):
             try:
                 parsed = parse_fattura_xml(d["raw_xml"].encode("utf-8", errors="replace"))
-                nome = parsed.get("fornitore_nome", "")
-                # Se trovato, aggiorna anche importi mancanti
-                upd = {"fornitore_nome": nome} if nome else {}
+                nome_xml = parsed.get("fornitore_nome", "")
+                upd = {}
+                if nome_xml:
+                    upd["fornitore_nome"] = nome_xml
+                    nome = nome_xml
+                    if piva:
+                        forn_map[piva] = nome_xml
+                # Importi mancanti: usa detraibilita_pct salvata sul documento se presente
                 if not (d.get("importo_imponibile") or 0) and parsed.get("importo_imponibile"):
+                    detr = float(d.get("detraibilita_pct") or parsed.get("detraibilita_pct") or 100.0)
+                    iva = parsed["importo_iva"]
                     upd["importo_imponibile"] = parsed["importo_imponibile"]
-                    upd["importo_iva"] = parsed["importo_iva"]
-                    upd["iva_detraibile"] = parsed["iva_detraibile"]
+                    upd["importo_iva"] = iva
+                    upd["iva_detraibile"] = round(iva * detr / 100, 2)
                 if upd:
                     to_update.append((d["_id"], upd))
                     d.update(upd)
@@ -99,13 +109,11 @@ async def lista_fatture(
 
         d["fornitore_nome"] = nome
 
-    # Persistenza in background (fire-and-forget)
+    # Salva aggiornamenti nel DB
     for doc_id, upd in to_update:
         await col_invoices().update_one({"_id": doc_id}, {"$set": upd})
-        if upd.get("fornitore_nome") and d.get("fornitore_piva"):
-            forn_map[d.get("fornitore_piva")] = upd["fornitore_nome"]
 
-    # Aggiorna ragione_sociale nei fornitori dove manca
+    # Aggiorna ragione_sociale nei fornitori dove manca (incluso campo legacy denominazione)
     for piva, nome in forn_map.items():
         if nome:
             await col_fornitori().update_one(
