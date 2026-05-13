@@ -399,4 +399,19 @@ async def elimina_fattura(request: Request, fattura_id: str):
     return {"ok": True}
 
 
-# ── POST /api/fatture/fix-data ────────────────────────────────────────────────
+# ── GET /api/fatture/debug-sample ────────────────────────────────────────────
+@router.get("/debug-sample")
+async def debug_sample(request: Request):
+    """Mostra i campi del primo documento senza fornitore_nome."""
+    verify_token(request)
+    doc = await col_invoices().find_one({"$or": [{"fornitore_nome": ""}, {"fornitore_nome": None}]})
+    if not doc:
+        return {"messaggio": "Tutti i documenti hanno fornitore_nome"}
+    return {
+        "campi_presenti": list(doc.keys()),
+        "ha_raw_xml": bool(doc.get("raw_xml")),
+        "raw_xml_len": len(doc.get("raw_xml") or ""),
+        "fornitore_piva": doc.get("fornitore_piva"),
+        "fornitore_nome": doc.get("fornitore_nome"),
+        "numero_fattura": doc.get("numero_fattura"),
+    }
