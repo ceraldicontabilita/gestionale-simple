@@ -28,9 +28,23 @@ Struttura tipica:
 Nota: diversi produttori di RT usano strutture leggermente diverse.
 Il parser è tollerante e prova più percorsi prima di arrendersi.
 """
+import re
 import hashlib
 from datetime import datetime
 from xml.etree import ElementTree as ET
+
+
+def _clean_xml_namespaces(xml_content: str) -> str:
+    """Rimuove namespace e prefissi tipo n1:Tag, p:Tag dall'XML prima del parsing."""
+    if xml_content.startswith('﻿'):
+        xml_content = xml_content[1:]
+    xml_content = xml_content.replace('\x00', '').strip()
+    xml_content = re.sub(r'\s+xmlns(:[a-zA-Z0-9_-]+)?="[^"]*"', '', xml_content)
+    xml_content = re.sub(r"\s+xmlns(:[a-zA-Z0-9_-]+)?='[^']*'", '', xml_content)
+    xml_content = re.sub(r'\s+xsi:[a-zA-Z]+="[^"]*"', '', xml_content)
+    xml_content = re.sub(r"<([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)", r'<\2', xml_content)
+    xml_content = re.sub(r"</([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)", r'</\2', xml_content)
+    return xml_content
 
 
 def _tag(el: ET.Element, *path: str) -> str:
@@ -198,10 +212,15 @@ def parse_corrispettivo_xml(xml_bytes: bytes) -> dict:
     """
     xml_hash = hashlib.md5(xml_bytes).hexdigest()
 
-    try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError as e:
-        raise ValueError(f"XML corrispettivi non valido: {e}")
+    root = None
+    for xml_src in (xml_bytes, _clean_xml_namespaces(xml_bytes.decode("utf-8", errors="replace")).encode("utf-8")):
+        try:
+            root = ET.fromstring(xml_src)
+            break
+        except ET.ParseError:
+            continue
+    if root is None:
+        raise ValueError("XML corrispettivi non valido o namespace non riconosciuto")
 
     # Rilevamento formato COR10 (DatiCorrispettivi)
     root_local = root.tag.split("}")[-1] if "}" in root.tag else root.tag
