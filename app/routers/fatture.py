@@ -69,17 +69,57 @@ async def lista_fatture(
     docs = await cursor.to_list(length=limit)
     totale = await col_invoices().count_documents(filtro)
 
-    # Arricchisci fornitore_nome dai fornitori per documenti con campo vuoto
-    pive_missing = list({d["fornitore_piva"] for d in docs if not d.get("fornitore_nome") and d.get("fornitore_piva")})
-    if pive_missing:
-        forn_list = await col_fornitori().find(
-            {"partita_iva": {"$in": pive_missing}},
-            {"partita_iva": 1, "ragione_sociale": 1}
-        ).to_list(length=1000)
-        forn_map = {f["partita_iva"]: f.get("ragione_sociale", "") for f in forn_list}
-        for d in docs:
-            if not d.get("fornitore_nome") and d.get("fornitore_piva"):
-                d["fornitore_nome"] = forn_map.get(d["fornitore_piva"], "")
+    # Costruisci mappa piva→nome dai fornitori (ragione_sociale o campo legacy denominazione)
+    all_forn = await col_fornitori().find({}, {"partita_iva": 1, "ragione_sociale": 1, "denominazione": 1}).to_list(length=5000)
+    forn_map = {
+        f["partita_iva"]: f.get("ragione_sociale") or f.get("denominazione") or ""
+        for f in all_forn if f.get("partita_iva")
+    }
+
+    # Per ogni fattura: arricchisci fornitore_nome e importi dal raw_xml se mancanti
+    from app.services.xml_parser import parse_fattura_xml
+    to_update = []
+    for d in docs:
+        piva = d.get("fornitore_piva") or ""
+        nome = d.get("fornitore_nome") or forn_map.get(piva, "")
+
+        # Se vuoto, estrai sempre dal raw_xml (fonte autoritativa)
+        if not nome and d.get("raw_xml"):
+            try:
+                parsed = parse_fattura_xml(d["raw_xml"].encode("utf-8", errors="replace"))
+                nome_xml = parsed.get("fornitore_nome", "")
+                upd = {}
+                if nome_xml:
+                    upd["fornitore_nome"] = nome_xml
+                    nome = nome_xml
+                    if piva:
+                        forn_map[piva] = nome_xml
+                # Importi mancanti: usa detraibilita_pct salvata sul documento se presente
+                if not (d.get("importo_imponibile") or 0) and parsed.get("importo_imponibile"):
+                    detr = float(d.get("detraibilita_pct") or parsed.get("detraibilita_pct") or 100.0)
+                    iva = parsed["importo_iva"]
+                    upd["importo_imponibile"] = parsed["importo_imponibile"]
+                    upd["importo_iva"] = iva
+                    upd["iva_detraibile"] = round(iva * detr / 100, 2)
+                if upd:
+                    to_update.append((d["_id"], upd))
+                    d.update(upd)
+            except Exception:
+                pass
+
+        d["fornitore_nome"] = nome
+
+    # Salva aggiornamenti nel DB
+    for doc_id, upd in to_update:
+        await col_invoices().update_one({"_id": doc_id}, {"$set": upd})
+
+    # Aggiorna ragione_sociale nei fornitori dove manca (incluso campo legacy denominazione)
+    for piva, nome in forn_map.items():
+        if nome:
+            await col_fornitori().update_one(
+                {"partita_iva": piva, "$or": [{"ragione_sociale": ""}, {"ragione_sociale": None}]},
+                {"$set": {"ragione_sociale": nome}}
+            )
 
     # KPI aggregati
     pipeline_kpi = [
@@ -360,98 +400,3 @@ async def elimina_fattura(request: Request, fattura_id: str):
 
 
 # ── POST /api/fatture/fix-data ────────────────────────────────────────────────
-@router.post("/fix-data")
-async def fix_data(request: Request):
-    verify_token(request)
-    fixed_fornitori = 0
-    fixed_nome = 0
-    fixed_importi = 0
-
-    try:
-        # 1) Mappa piva→nome dalle fatture che hanno già fornitore_nome
-        inv_list = await col_invoices().find(
-            {}, {"fornitore_piva": 1, "fornitore_nome": 1}
-        ).to_list(length=50000)
-        piva_to_nome = {}
-        for inv in inv_list:
-            piva = inv.get("fornitore_piva") or ""
-            nome = inv.get("fornitore_nome") or ""
-            if piva and nome and piva not in piva_to_nome:
-                piva_to_nome[piva] = nome
-
-        # 2) Aggiorna ragione_sociale nei fornitori che ce l'hanno vuota
-        forn_list = await col_fornitori().find({}).to_list(length=10000)
-        for f in forn_list:
-            piva = f.get("partita_iva") or ""
-            rs = f.get("ragione_sociale") or f.get("denominazione") or ""
-            nuovo_nome = piva_to_nome.get(piva, "")
-            if not rs and nuovo_nome:
-                await col_fornitori().update_one(
-                    {"_id": f["_id"]},
-                    {"$set": {"ragione_sociale": nuovo_nome}}
-                )
-                fixed_fornitori += 1
-            elif not rs and f.get("denominazione"):
-                await col_fornitori().update_one(
-                    {"_id": f["_id"]},
-                    {"$set": {"ragione_sociale": f["denominazione"]}}
-                )
-                fixed_fornitori += 1
-
-        # 3) Mappa aggiornata dai fornitori per fixare le fatture senza fornitore_nome
-        forn_list2 = await col_fornitori().find(
-            {}, {"partita_iva": 1, "ragione_sociale": 1}
-        ).to_list(length=10000)
-        forn_map = {}
-        for f in forn_list2:
-            piva = f.get("partita_iva") or ""
-            nome = f.get("ragione_sociale") or ""
-            if piva and nome:
-                forn_map[piva] = nome
-
-        # Unisce le due mappe
-        forn_map.update({k: v for k, v in piva_to_nome.items() if k not in forn_map})
-
-        all_inv = await col_invoices().find({}).to_list(length=50000)
-        for d in all_inv:
-            piva = d.get("fornitore_piva") or ""
-            nome_attuale = d.get("fornitore_nome") or ""
-            if not nome_attuale and piva and piva in forn_map:
-                await col_invoices().update_one(
-                    {"_id": d["_id"]},
-                    {"$set": {"fornitore_nome": forn_map[piva]}}
-                )
-                fixed_nome += 1
-
-        # 4) Ricalcola imponibile/IVA dove mancano
-        for d in all_inv:
-            totale = float(d.get("importo_totale") or 0)
-            imponibile = float(d.get("importo_imponibile") or 0)
-            if totale > 0 and imponibile == 0:
-                aliquota = float(d.get("aliquota_iva") or 22.0)
-                if aliquota > 0:
-                    imp = round(totale / (1 + aliquota / 100), 2)
-                    iva = round(totale - imp, 2)
-                else:
-                    imp = totale
-                    iva = 0.0
-                detr = float(d.get("detraibilita_pct") or 100.0)
-                await col_invoices().update_one(
-                    {"_id": d["_id"]},
-                    {"$set": {
-                        "importo_imponibile": imp,
-                        "importo_iva": iva,
-                        "iva_detraibile": round(iva * detr / 100, 2),
-                    }}
-                )
-                fixed_importi += 1
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore fix-data: {str(e)}")
-
-    return {
-        "ok": True,
-        "fixed_fornitori": fixed_fornitori,
-        "fixed_nome_fatture": fixed_nome,
-        "fixed_importi": fixed_importi,
-    }
