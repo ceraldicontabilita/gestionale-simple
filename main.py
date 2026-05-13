@@ -98,7 +98,7 @@ async def dashboard_summary(anno: int = None):
         fatture_da_pagare = await db["invoices"].count_documents({"stato": "da_pagare", "anno": anno})
         provvisori        = await db["prima_nota_provvisori"].count_documents({"stato": "provvisorio"})
         verbali_da_pagare = await db["verbali_noleggio"].count_documents({"stato": "da_pagare"})
-        f24_da_pagare     = await db["f24"].count_documents({"stato": "da_pagare"})
+        f24_da_pagare     = await db["f24_commercialista"].count_documents({"stato": "da_pagare"})
 
         # Saldo cassa (ultimo disponibile)
         cassa_pipe = [{"$group": {"_id": "$tipo", "tot": {"$sum": "$importo"}}}]

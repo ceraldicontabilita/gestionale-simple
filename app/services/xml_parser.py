@@ -299,7 +299,6 @@ def parse_fattura_xml(xml_bytes: bytes) -> dict:
         "causale":           causale,
 
         # Fornitore
-        "supplier_vat":      fornitore_piva,    # nome campo esistente nel DB
         "fornitore_piva":    fornitore_piva,
         "fornitore_cf":      fornitore_cf,
         "fornitore_nome":    fornitore_nome,

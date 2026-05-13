@@ -61,7 +61,7 @@ async def scadenzario_unificato(
             items.append({
                 "tipo":        "fattura",
                 "id":          str(d.get("_id", "")),
-                "descrizione": f"Fattura {d.get('numero_fattura','')} — {d.get('fornitore_nome', d.get('supplier_name',''))}",
+                "descrizione": f"Fattura {d.get('numero_fattura','')} — {d.get('fornitore_nome','')}",
                 "importo":     d.get("importo_totale", 0.0),
                 "scadenza":    scad[:10] if scad else "",
                 "giorni":      gg,
@@ -71,7 +71,7 @@ async def scadenzario_unificato(
 
     # ── 2. F24 da pagare ──────────────────────────────────────────────────────
     if not tipo or tipo == "f24":
-        cursor = db["f24"].find({
+        cursor = db["f24_commercialista"].find({
             "stato":    "da_pagare",
             "scadenza": {"$gte": oggi_s, "$lte": entro},
         }).sort("scadenza", 1).limit(50)
@@ -119,7 +119,7 @@ async def scadenzario_unificato(
 
     # ── 4. Scadenze veicoli ───────────────────────────────────────────────────
     if not tipo or tipo == "veicoli":
-        cursor = db["veicoli"].find({"attivo": True})
+        cursor = db["veicoli_noleggio"].find({"attivo": True})
         docs   = await cursor.to_list(length=200)
         for d in docs:
             for campo, label in [
@@ -215,7 +215,7 @@ async def scadenze_oggi(request: Request):
         })
 
     # F24 scaduti o in scadenza oggi
-    cursor2 = db["f24"].find({
+    cursor2 = db["f24_commercialista"].find({
         "stato":    "da_pagare",
         "scadenza": {"$lte": oggi},
     }).sort("scadenza", 1).limit(20)
