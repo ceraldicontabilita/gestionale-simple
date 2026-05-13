@@ -612,174 +612,426 @@ async function loadScad(g,btn){
 /* ═══════════════════════════════════════════════════════
    PAGE: FATTURE
 ═══════════════════════════════════════════════════════ */
-PAGES['fatture']=async function(){
-  $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML/P7M</button>`;
-  $('content').innerHTML=`
+
+// Mappa codici MP → etichetta leggibile
+const METODO_LABEL = {
+  MP01:'Contanti', MP02:'Assegno', MP03:'Assegno circolare', MP04:'Contanti presso Tesoreria',
+  MP05:'Bonifico', MP06:'Vaglia cambiario', MP07:'Bollettino bancario', MP08:'Carta di pagamento',
+  MP09:'RID', MP10:'RID utenze', MP12:'RIBA', MP13:'MAV', MP14:'Quietanza Erario',
+  MP15:'Giroconto su conti', MP16:'Domiciliazione bancaria', MP17:'Domiciliazione postale',
+  MP18:'Bollettino di c/c postale', MP19:'SEPA Direct Debit Core', MP20:'SEPA Direct Debit B2B',
+  banca:'Bonifico bancario', cassa:'Contanti cassa', assegno:'Assegno',
+  bonifico:'Bonifico', contanti:'Contanti', rid:'RID/SDD',
+};
+function metodoLabel(m){ return m ? (METODO_LABEL[m] || METODO_LABEL[m.toUpperCase()] || m) : '–'; }
+
+// Badge tipo documento
+function tipoDocBadge(t){
+  const map={TD01:'Fattura',TD04:'Nota credito',TD08:'Nota credito',TD24:'Fattura differita',TD25:'Fattura differita semplificata'};
+  const label=map[t]||t||'–';
+  const color=t==='TD04'||t==='TD08'?'#fef2f2;color:#dc2626':'#f0fdf4;color:#16a34a';
+  return `<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;background:${color}">${label}</span>`;
+}
+
+// Alert visuale
+function alertBadge(f){
+  const badges=[];
+  if(f.alert_fornitore_nuovo) badges.push(`<span title="Fornitore creato automaticamente — completare anagrafica" style="font-size:10px;background:#fef9c3;color:#854d0e;padding:2px 5px;border-radius:4px;font-weight:600">⚠ Fornitore nuovo</span>`);
+  if(f.alert_metodo_mancante) badges.push(`<span title="Metodo pagamento non definito — impostare nell'anagrafica fornitore" style="font-size:10px;background:#fef2f2;color:#dc2626;padding:2px 5px;border-radius:4px;font-weight:600">⚠ Metodo pag. mancante</span>`);
+  return badges.join(' ');
+}
+
+PAGES['fatture'] = async function(){
+  $('tb-actions').innerHTML = `<button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML / P7M</button>`;
+  $('content').innerHTML = `
     <div class="card card-body mb-5">
       <div class="flex gap-3 flex-wrap items-end">
-        <div><label>Anno</label><select id="f-anno" class="inp" style="width:110px" onchange="loadFatture()">
-          ${[2026,2025,2024,2023].map(y=>`<option ${y===2026?'selected':''}>${y}</option>`).join('')}
-        </select></div>
-        <div><label>Stato</label><select id="f-stato" class="inp" style="width:150px" onchange="loadFatture()">
-          <option value="">Tutti</option><option value="da_pagare">Da pagare</option>
-          <option value="pagata">Pagata</option><option value="scaduta">Scaduta</option>
-        </select></div>
-        <div style="flex:1;min-width:200px"><label>Cerca</label>
-          <input id="f-cerca" class="inp" placeholder="Fornitore, numero..." oninput="debounce(loadFatture,500)()">
+        <div>
+          <label>Anno</label>
+          <select id="f-anno" class="inp" style="width:110px" onchange="loadFatture()">
+            ${[2026,2025,2024,2023].map(y=>`<option ${y===new Date().getFullYear()?'selected':''}>${y}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Stato</label>
+          <select id="f-stato" class="inp" style="width:160px" onchange="loadFatture()">
+            <option value="">Tutti</option>
+            <option value="da_pagare">Da pagare</option>
+            <option value="da_classificare">Da classificare</option>
+            <option value="pagata">Pagata</option>
+            <option value="scaduta">Scaduta</option>
+            <option value="annullata">Annullata</option>
+          </select>
+        </div>
+        <div>
+          <label>Tipo doc.</label>
+          <select id="f-tipo" class="inp" style="width:160px" onchange="loadFatture()">
+            <option value="">Tutti</option>
+            <option value="TD01">TD01 · Fattura</option>
+            <option value="TD04">TD04 · Nota credito</option>
+            <option value="TD24">TD24 · Fattura differita</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label>Cerca</label>
+          <input id="f-cerca" class="inp" placeholder="Fornitore, numero fattura, P.IVA..."
+            oninput="debounce(loadFatture,400)()">
         </div>
       </div>
     </div>
     <div id="fat-body">${loading()}</div>`;
   loadFatture();
 };
+
 async function loadFatture(){
-  const anno=$('f-anno')?.value||2026,stato=$('f-stato')?.value||'',cerca=$('f-cerca')?.value||'';
-  const el=$('fat-body'); if(!el)return;
-  el.innerHTML=loading();
+  const anno   = $('f-anno')?.value  || new Date().getFullYear();
+  const stato  = $('f-stato')?.value || '';
+  const tipo   = $('f-tipo')?.value  || '';
+  const cerca  = $('f-cerca')?.value || '';
+  const el = $('fat-body');
+  if(!el) return;
+  el.innerHTML = loading();
   try{
-    let url=`/api/fatture?anno=${anno}&limit=200`;
-    if(stato)url+=`&stato=${stato}`;
-    if(cerca)url+=`&cerca=${encodeURIComponent(cerca)}`;
-    const data=await GET(url);
-    const list=data?.fatture||data||[];
-    if(!list.length){el.innerHTML=`<div class="card">${emptyState('🧾','Nessuna fattura trovata')}</div>`;return;}
-    const kpi=data?.kpi||{};
-    const tot=kpi.totale||list.reduce((s,f)=>s+(f.importo_totale||0),0);
-    el.innerHTML=`
+    let url = `/api/fatture?anno=${anno}&limit=500`;
+    if(stato) url += `&stato=${encodeURIComponent(stato)}`;
+    if(tipo)  url += `&tipo_documento=${encodeURIComponent(tipo)}`;
+    if(cerca) url += `&cerca=${encodeURIComponent(cerca)}`;
+    const data = await GET(url);
+    const list = data?.fatture || [];
+    const kpi  = data?.kpi || {};
+
+    if(!list.length){
+      el.innerHTML = `<div class="card">${emptyState('🧾','Nessuna fattura trovata')}</div>`;
+      return;
+    }
+
+    // KPI cards
+    const kpiHtml = `
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-        <div class="card card-body" style="padding:14px"><div style="font-size:11px;color:var(--text3);margin-bottom:4px">IMPONIBILE TOTALE</div><div style="font-size:18px;font-weight:800">${euro(kpi.imponibile||0)}</div></div>
-        <div class="card card-body" style="padding:14px"><div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA TOTALE</div><div style="font-size:18px;font-weight:800">${euro(kpi.iva||0)}</div></div>
-        <div class="card card-body" style="padding:14px"><div style="font-size:11px;color:var(--text3);margin-bottom:4px">TOTALE FATTURATO</div><div style="font-size:18px;font-weight:800;color:var(--indigo)">${euro(tot)}</div></div>
-        <div class="card card-body" style="padding:14px"><div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA DETRAIBILE</div><div style="font-size:18px;font-weight:800;color:var(--green)">${euro(kpi.iva_detr||0)}</div></div>
-      </div>
-      <div class="tbl-wrap">
-        <div class="tbl-summary"><span>${list.length} fatture</span></div>
-        <table><thead><tr><th>N° Fattura</th><th>Data</th><th>Fornitore</th><th>Imponibile</th><th>IVA</th><th>Totale</th><th>Scadenza</th><th>Metodo pag.</th><th>Stato</th><th></th></tr></thead>
-        <tbody>${list.map(f=>`<tr>
-          <td class="font-mono" style="font-size:11px">${f.numero_fattura||'–'}</td>
-          <td>${fmtDate(f.data_fattura)}</td>
-          <td style="font-weight:600;max-width:180px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.fornitore_nome||'–'}</div></td>
-          <td>${euro(f.importo_imponibile)}</td>
-          <td>${euro(f.importo_iva)}</td>
-          <td style="font-weight:700">${euro(f.importo_totale)}</td>
-          <td>${fmtDate(f.data_scadenza)}</td>
-          <td style="font-size:12px;color:var(--text3)">${_metodoLabel(f.metodo_pagamento)||'–'}</td>
-          <td>${badge(f.stato||'da_pagare')}</td>
-          <td style="text-align:right;white-space:nowrap">
-            ${(f.stato==='da_pagare'||f.stato==='scaduta')?`<button class="btn btn-success btn-xs" onclick="modalPagaFattura('${f._id}','${(f.fornitore_nome||'').replace(/'/g,'&apos;')}',${f.importo_totale||0})">Paga</button> `:''}
-            <button class="btn btn-ghost btn-xs" onclick="modalEditFattura('${f._id}','${(f.fornitore_nome||'').replace(/'/g,'&apos;')}','${f.metodo_pagamento||''}','${f.data_scadenza||''}','${f.stato||''}')">✏️</button>
-          </td>
-        </tr>`).join('')}</tbody></table>
+        <div class="card card-body" style="padding:14px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IMPONIBILE</div>
+          <div style="font-size:18px;font-weight:800">${euro(kpi.imponibile||0)}</div>
+        </div>
+        <div class="card card-body" style="padding:14px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA</div>
+          <div style="font-size:18px;font-weight:800">${euro(kpi.iva||0)}</div>
+        </div>
+        <div class="card card-body" style="padding:14px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">TOTALE</div>
+          <div style="font-size:18px;font-weight:800;color:var(--indigo)">${euro(kpi.totale||0)}</div>
+        </div>
+        <div class="card card-body" style="padding:14px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA DETRAIBILE</div>
+          <div style="font-size:18px;font-weight:800;color:var(--green)">${euro(kpi.iva_detr||0)}</div>
+        </div>
       </div>`;
-  }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
+
+    // Tabella fatture
+    const righe = list.map(f => {
+      const alerts = alertBadge(f);
+      const esc = s => (s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<tr onclick="modalDettaglioFattura('${f._id}')" style="cursor:pointer">
+        <td class="font-mono" style="font-size:11px;white-space:nowrap">${f.numero_fattura||'–'}</td>
+        <td style="white-space:nowrap">${fmtDate(f.data_fattura)}</td>
+        <td>${tipoDocBadge(f.tipo_documento)}</td>
+        <td style="font-weight:600;max-width:200px">
+          <div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.fornitore_nome||f.fornitore_piva||'–'}</div>
+          ${alerts ? `<div style="margin-top:3px">${alerts}</div>` : ''}
+        </td>
+        <td style="font-family:monospace;text-align:right">${euro(f.importo_imponibile)}</td>
+        <td style="font-family:monospace;text-align:right">${euro(f.importo_iva)}</td>
+        <td style="font-family:monospace;text-align:right;font-weight:700">${euro(f.importo_totale)}</td>
+        <td style="white-space:nowrap">${fmtDate(f.data_scadenza)||'–'}</td>
+        <td style="font-size:12px">${metodoLabel(f.metodo_pagamento)}</td>
+        <td>${badge(f.stato||'da_pagare')}</td>
+        <td style="text-align:right;white-space:nowrap" onclick="event.stopPropagation()">
+          ${(f.stato==='da_pagare'||f.stato==='scaduta'||f.stato==='da_classificare') ?
+            `<button class="btn btn-success btn-xs" onclick="modalPagaFattura('${f._id}','${esc(f.fornitore_nome)}',${f.importo_totale||0})">Paga</button> ` : ''}
+          <button class="btn btn-ghost btn-xs" onclick="modalEditFattura('${f._id}','${esc(f.fornitore_nome)}','${esc(f.metodo_pagamento)}','${f.data_scadenza||''}','${f.stato||''}')">✏️</button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    el.innerHTML = kpiHtml + `
+      <div class="tbl-wrap">
+        <div class="tbl-summary"><span>${list.length} fatture (su ${data.totale} totali)</span></div>
+        <table>
+          <thead><tr>
+            <th>N° Fattura</th><th>Data</th><th>Tipo</th><th>Fornitore</th>
+            <th style="text-align:right">Imponibile</th><th style="text-align:right">IVA</th>
+            <th style="text-align:right">Totale</th><th>Scadenza</th>
+            <th>Metodo pag.</th><th>Stato</th><th></th>
+          </tr></thead>
+          <tbody>${righe}</tbody>
+        </table>
+      </div>`;
+  } catch(e){
+    el.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
 }
 
-function _metodoLabel(m){
-  const map={'MP01':'Contanti','MP02':'Assegno','MP05':'Bonifico','MP08':'Carta','banca':'Bonifico','cassa':'Contanti','assegno':'Assegno'};
-  return map[m]||m||'';
+// ── Dettaglio fattura (click su riga) ────────────────────────────────────────
+async function modalDettaglioFattura(id){
+  openModal(`<div class="modal" style="max-width:700px"><div class="modal-head">
+    <div><div class="modal-title">Dettaglio Fattura</div></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+  </div><div class="modal-body" id="det-body">${loading()}</div>
+  <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Chiudi</button></div>
+  </div>`);
+
+  try{
+    const f = await GET(`/api/fatture/${id}`);
+
+    // Righe dettaglio
+    const linee = (f.linee_dettaglio||[]).map(r=>`
+      <tr>
+        <td style="font-size:12px">${r.descrizione||'–'}</td>
+        <td style="text-align:right;font-size:12px">${r.quantita||1}</td>
+        <td style="text-align:right;font-size:12px">${euro(r.prezzo_unitario)}</td>
+        <td style="text-align:right;font-size:12px">${r.aliquota_iva||0}%</td>
+        <td style="text-align:right;font-size:12px;font-weight:600">${euro(r.imponibile)}</td>
+      </tr>`).join('');
+
+    $('det-body').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text3);margin-bottom:8px">DOCUMENTO</div>
+          <table style="font-size:13px;width:100%">
+            <tr><td style="color:var(--text3);padding:3px 0;width:130px">Numero</td><td style="font-family:monospace;font-weight:700">${f.numero_fattura||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">Data</td><td>${fmtDate(f.data_fattura)||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">Tipo</td><td>${tipoDocBadge(f.tipo_documento)}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">Scadenza</td><td>${fmtDate(f.data_scadenza)||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">Stato</td><td>${badge(f.stato||'–')}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">Prima nota</td><td style="font-size:12px">${f.prima_nota_tipo||'–'}</td></tr>
+            ${f.causale?`<tr><td style="color:var(--text3);padding:3px 0">Causale</td><td style="font-size:12px">${f.causale}</td></tr>`:''}
+          </table>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text3);margin-bottom:8px">FORNITORE</div>
+          <table style="font-size:13px;width:100%">
+            <tr><td style="color:var(--text3);padding:3px 0;width:130px">Ragione sociale</td><td style="font-weight:600">${f.fornitore_nome||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">P.IVA</td><td style="font-family:monospace">${f.fornitore_piva||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">C.F.</td><td style="font-family:monospace">${f.fornitore_cf||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">Indirizzo</td><td style="font-size:12px">${[f.fornitore_indirizzo,f.fornitore_cap,f.fornitore_citta].filter(Boolean).join(', ')||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">IBAN</td><td style="font-family:monospace;font-size:12px">${f.fornitore_iban||'–'}</td></tr>
+            <tr><td style="color:var(--text3);padding:3px 0">Metodo pag.</td><td style="font-weight:600">${metodoLabel(f.metodo_pagamento)}</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div style="background:var(--bg2);border-radius:10px;padding:16px;margin-bottom:16px">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);margin-bottom:10px">IMPORTI</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+          <div><div style="font-size:11px;color:var(--text3)">Imponibile</div><div style="font-size:16px;font-weight:700">${euro(f.importo_imponibile)}</div></div>
+          <div><div style="font-size:11px;color:var(--text3)">IVA ${f.aliquota_iva||0}%</div><div style="font-size:16px;font-weight:700">${euro(f.importo_iva)}</div></div>
+          <div><div style="font-size:11px;color:var(--text3)">Totale</div><div style="font-size:16px;font-weight:800;color:var(--indigo)">${euro(f.importo_totale)}</div></div>
+          <div><div style="font-size:11px;color:var(--text3)">IVA detraibile ${f.detraibilita_pct||100}%</div><div style="font-size:16px;font-weight:700;color:var(--green)">${euro(f.iva_detraibile)}</div></div>
+        </div>
+      </div>
+
+      ${(f.linee_dettaglio||[]).length ? `
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);margin-bottom:8px">RIGHE DOCUMENTO</div>
+        <table style="font-size:12px;width:100%">
+          <thead><tr style="background:var(--bg2)">
+            <th style="text-align:left;padding:6px">Descrizione</th>
+            <th style="text-align:right;padding:6px">Qtà</th>
+            <th style="text-align:right;padding:6px">Prezzo unit.</th>
+            <th style="text-align:right;padding:6px">IVA</th>
+            <th style="text-align:right;padding:6px">Imponibile</th>
+          </tr></thead>
+          <tbody>${linee}</tbody>
+        </table>
+      </div>` : ''}
+
+      ${(f.targhe_veicoli||[]).length ? `
+      <div style="font-size:12px;color:var(--text3)">
+        Targhe rilevate: ${f.targhe_veicoli.map(t=>`<span style="font-family:monospace;background:var(--bg2);padding:2px 6px;border-radius:4px">${t}</span>`).join(' ')}
+      </div>` : ''}
+
+      ${alertBadge(f) ? `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">${alertBadge(f)}</div>` : ''}`;
+  } catch(e){
+    $('det-body').innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
 }
 
+// ── Upload XML ────────────────────────────────────────────────────────────────
+function modalUploadFatture(){
+  openModal(`<div class="modal" style="max-width:620px">
+    <div class="modal-head">
+      <div><div class="modal-title">Importa Fatture XML / P7M</div>
+      <div class="modal-sub">FatturaPA — file multipli supportati</div></div>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="drop" id="drop-zone" onclick="$('f-file').click()"
+           ondragover="event.preventDefault();this.style.borderColor='var(--indigo)'"
+           ondragleave="this.style.borderColor=''"
+           ondrop="event.preventDefault();this.style.borderColor='';uploadFatture({files:event.dataTransfer.files})">
+        <span class="drop-icon">📂</span>
+        <div class="drop-label">Trascina qui o clicca per selezionare</div>
+        <div class="drop-sub">Formati accettati: .xml · .p7m — max 50 file</div>
+        <input id="f-file" type="file" accept=".xml,.p7m" multiple style="display:none" onchange="uploadFatture(this)">
+      </div>
+      <div id="up-prog" style="display:none;margin-top:16px">
+        <div class="progress mb-2"><div id="up-fill" class="progress-fill" style="width:0%;transition:width .3s"></div></div>
+        <div id="up-status" style="font-size:12px;color:var(--text3);text-align:center;margin-bottom:8px"></div>
+        <div id="up-risultati"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Chiudi</button>
+    </div>
+  </div>`);
+}
+
+async function uploadFatture(input){
+  const files = [...(input.files||[])];
+  if(!files.length) return;
+
+  $('up-prog').style.display = 'block';
+  const resEl = $('up-risultati');
+  resEl.innerHTML = '';
+  let nOk=0, nDup=0, nErr=0;
+
+  for(let i=0; i<files.length; i++){
+    $('up-fill').style.width = `${Math.round(((i+1)/files.length)*100)}%`;
+    $('up-status').textContent = `${i+1}/${files.length}: ${files[i].name}`;
+    try{
+      const fd = new FormData();
+      fd.append('file', files[i]);
+      const r = await POST('/api/fatture/import-xml', fd, true);
+
+      if(r.esito === 'importata'){
+        nOk++;
+        const alerts = [];
+        if(r.alert_fornitore_nuovo) alerts.push('⚠ fornitore nuovo');
+        if(r.alert_metodo_mancante) alerts.push('⚠ metodo pag. mancante');
+        resEl.innerHTML += `<div style="font-size:12px;padding:6px 10px;background:#f0fdf4;border-radius:6px;margin-bottom:4px">
+          ✓ <strong>${r.numero||'–'}</strong> · ${r.fornitore||'–'} · ${euro(r.importo_totale||r.importo||0)}
+          · Prima nota: <strong>${r.prima_nota?.destinazione||'–'}</strong>
+          ${alerts.length?`<span style="color:#b45309"> ${alerts.join(' · ')}</span>`:''}
+        </div>`;
+      } else {
+        nDup++;
+        resEl.innerHTML += `<div style="font-size:12px;padding:6px 10px;background:#fef9c3;border-radius:6px;margin-bottom:4px">
+          ⟳ Duplicata: <strong>${r.numero||'–'}</strong> (${r.messaggio||''})
+        </div>`;
+      }
+    } catch(e){
+      nErr++;
+      resEl.innerHTML += `<div style="font-size:12px;padding:6px 10px;background:#fef2f2;border-radius:6px;margin-bottom:4px">
+        ✗ ${files[i].name}: ${e.message||'Errore'}
+      </div>`;
+    }
+  }
+
+  $('up-fill').style.width = '100%';
+  $('up-status').textContent = `Completato: ${nOk} importate · ${nDup} duplicate · ${nErr} errori`;
+  if(nOk > 0){ ok(`${nOk} fatture importate`); loadFatture(); }
+  else if(nErr > 0 && !nOk) err(`${nErr} errori`);
+}
+
+// ── Modifica fattura ──────────────────────────────────────────────────────────
 function modalEditFattura(id, nome, metodo, scadenza, stato){
+  const opts = ['','MP01','MP02','MP05','MP08','banca','cassa','assegno'];
+  const optsHtml = opts.map(v=>`<option value="${v}" ${metodo===v?'selected':''}>${v?metodoLabel(v):'– non specificato –'}</option>`).join('');
+  const statoOpts = ['da_pagare','da_classificare','pagata','scaduta','annullata'];
   openModal(`<div class="modal">
-    <div class="modal-head"><div><div class="modal-title">Modifica Fattura</div><div class="modal-sub">${nome}</div></div><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-head">
+      <div><div class="modal-title">Modifica Fattura</div><div class="modal-sub">${nome||id}</div></div>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
     <div class="modal-body">
       <div class="field-row">
-        <div class="field"><label>Metodo pagamento</label>
-          <select id="ef-metodo" class="inp">
-            <option value="">– non specificato –</option>
-            <option value="MP01" ${metodo==='MP01'?'selected':''}>MP01 · Contanti</option>
-            <option value="MP02" ${metodo==='MP02'?'selected':''}>MP02 · Assegno</option>
-            <option value="MP05" ${metodo==='MP05'?'selected':''}>MP05 · Bonifico</option>
-            <option value="MP08" ${metodo==='MP08'?'selected':''}>MP08 · Carta di credito</option>
-            <option value="banca" ${metodo==='banca'?'selected':''}>Bonifico bancario</option>
-            <option value="cassa" ${metodo==='cassa'?'selected':''}>Contanti cassa</option>
-          </select>
+        <div class="field">
+          <label>Metodo pagamento</label>
+          <select id="ef-metodo" class="inp">${optsHtml}</select>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px">Il metodo viene salvato anche sull'anagrafica fornitore</div>
         </div>
-        <div class="field"><label>Stato</label>
-          <select id="ef-stato" class="inp">
-            <option value="da_pagare" ${stato==='da_pagare'?'selected':''}>Da pagare</option>
-            <option value="pagata" ${stato==='pagata'?'selected':''}>Pagata</option>
-            <option value="scaduta" ${stato==='scaduta'?'selected':''}>Scaduta</option>
-            <option value="annullata" ${stato==='annullata'?'selected':''}>Annullata</option>
-          </select>
+        <div class="field">
+          <label>Stato</label>
+          <select id="ef-stato" class="inp">${statoOpts.map(s=>`<option value="${s}" ${stato===s?'selected':''}>${s.replace(/_/g,' ')}</option>`).join('')}</select>
         </div>
-        <div class="field span2"><label>Data scadenza</label>
+        <div class="field">
+          <label>Data scadenza</label>
           <input id="ef-scad" type="date" class="inp" value="${scadenza?scadenza.slice(0,10):''}">
+        </div>
+        <div class="field">
+          <label>Note</label>
+          <input id="ef-note" class="inp" placeholder="Note operative...">
         </div>
       </div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
-      <button class="btn btn-primary" onclick="saveEditFattura('${id}')">Salva modifiche</button>
+      <button class="btn btn-primary" onclick="saveEditFattura('${id}')">Salva</button>
     </div>
   </div>`);
 }
 
 async function saveEditFattura(id){
   try{
-    await PUT(`/api/fatture/${id}`,{
-      metodo_pagamento: $('ef-metodo').value||null,
-      stato: $('ef-stato').value||null,
-      data_scadenza: $('ef-scad').value||null,
-    });
-    ok('Fattura aggiornata');closeModal();loadFatture();
-  }catch(e){err(e.message);}
+    const payload = {};
+    const m = $('ef-metodo').value; if(m) payload.metodo_pagamento = m;
+    const s = $('ef-stato').value;  if(s) payload.stato = s;
+    const d = $('ef-scad').value;   if(d) payload.data_scadenza = d;
+    const n = $('ef-note').value;   if(n) payload.note = n;
+    await PUT(`/api/fatture/${id}`, payload);
+    ok('Fattura aggiornata'); closeModal(); loadFatture();
+  } catch(e){ err(e.message); }
 }
-const _timers={};
-function debounce(fn,ms){ return function(){clearTimeout(_timers[fn]);_timers[fn]=setTimeout(fn,ms);}; }
 
-function modalUploadFatture(){
+// ── Registra pagamento ────────────────────────────────────────────────────────
+function modalPagaFattura(id, nome, importo){
   openModal(`<div class="modal">
-    <div class="modal-head"><div><div class="modal-title">Importa Fatture XML/P7M</div><div class="modal-sub">FatturaPA · file multipli supportati</div></div><button class="modal-close" onclick="closeModal()">×</button></div>
-    <div class="modal-body">
-      <div class="drop" onclick="$('f-file').click()">
-        <span class="drop-icon">📂</span>
-        <div class="drop-label">Trascina o clicca per selezionare</div>
-        <div class="drop-sub">File XML o P7M · massimo 50 file</div>
-        <input id="f-file" type="file" accept=".xml,.p7m" multiple style="display:none" onchange="uploadFatture(this)">
-      </div>
-      <div id="up-prog" class="hidden mt-4">
-        <div class="progress mb-2"><div id="up-fill" class="progress-fill" style="width:0%"></div></div>
-        <div id="up-status" style="font-size:12px;color:var(--text3);text-align:center"></div>
-      </div>
+    <div class="modal-head">
+      <div><div class="modal-title">Registra Pagamento</div>
+      <div class="modal-sub">${nome||id} · ${euro(importo)}</div></div>
+      <button class="modal-close" onclick="closeModal()">×</button>
     </div>
-    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Annulla</button></div>
-  </div>`);
-}
-async function uploadFatture(input){
-  const files=[...input.files]; if(!files.length)return;
-  $('up-prog').classList.remove('hidden');
-  let ok=0,er=0;
-  for(let i=0;i<files.length;i++){
-    $('up-fill').style.width=`${Math.round((i/files.length)*100)}%`;
-    $('up-status').textContent=`${i+1}/${files.length}: ${files[i].name}`;
-    try{const fd=new FormData();fd.append('file',files[i]);await POST('/api/fatture/import-xml',fd,true);ok++;}
-    catch{er++;}
-  }
-  $('up-fill').style.width='100%';
-  $('up-status').textContent=`✓ ${ok} importate${er>0?`, ${er} errori`:''}`;
-  ok>0?ok(`${ok} fatture importate`):err(`${er} errori`);
-  setTimeout(()=>{closeModal();loadFatture();},1200);
-}
-
-function modalPagaFattura(id,nome,importo){
-  openModal(`<div class="modal">
-    <div class="modal-head"><div><div class="modal-title">Registra Pagamento</div><div class="modal-sub">${nome} · ${euro(importo)}</div></div><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="modal-body">
       <div class="field-row">
-        <div class="field"><label>Data pagamento</label><input id="pd-data" type="date" class="inp" value="${today()}"></div>
-        <div class="field"><label>Metodo</label><select id="pd-met" class="inp"><option value="banca">Bonifico</option><option value="cassa">Contanti</option><option value="assegno">Assegno</option></select></div>
-        <div class="field"><label>Importo €</label><input id="pd-imp" type="number" step="0.01" class="inp" value="${importo}"></div>
-        <div class="field"><label>Riferimento</label><input id="pd-note" class="inp" placeholder="Numero bonifico..."></div>
+        <div class="field"><label>Data pagamento</label>
+          <input id="pd-data" type="date" class="inp" value="${today()}">
+        </div>
+        <div class="field"><label>Metodo</label>
+          <select id="pd-met" class="inp">
+            <option value="MP05">Bonifico</option>
+            <option value="MP01">Contanti</option>
+            <option value="MP02">Assegno</option>
+            <option value="MP08">Carta</option>
+          </select>
+        </div>
+        <div class="field"><label>Importo €</label>
+          <input id="pd-imp" type="number" step="0.01" class="inp" value="${importo}">
+        </div>
+        <div class="field"><label>Riferimento / note</label>
+          <input id="pd-note" class="inp" placeholder="N° bonifico, assegno...">
+        </div>
       </div>
     </div>
-    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Annulla</button><button class="btn btn-success" onclick="pagaFattura('${id}')">✓ Conferma pagamento</button></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
+      <button class="btn btn-success" onclick="pagaFattura('${id}')">✓ Conferma pagamento</button>
+    </div>
   </div>`);
 }
+
 async function pagaFattura(id){
-  try{await PUT(`/api/fatture/${id}/paga`,{data_pagamento:$('pd-data').value,metodo:$('pd-met').value,importo:parseFloat($('pd-imp').value),note:$('pd-note').value});ok('Pagamento registrato');closeModal();loadFatture();}
-  catch(e){err(e.message);}
+  try{
+    await PUT(`/api/fatture/${id}/paga`, {
+      data_pagamento: $('pd-data').value,
+      metodo:         $('pd-met').value,
+      importo:        parseFloat($('pd-imp').value),
+      note:           $('pd-note').value,
+    });
+    ok('Pagamento registrato'); closeModal(); loadFatture();
+  } catch(e){ err(e.message); }
 }
+
+const _timers={};
+function debounce(fn,ms){ return function(){clearTimeout(_timers[fn]);_timers[fn]=setTimeout(fn,ms);}; }
 
 /* ═══════════════════════════════════════════════════════
    PAGE: FORNITORI
