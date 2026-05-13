@@ -1344,11 +1344,11 @@ function modalImportCSV(){
   openModal(`<div class="modal">
     <div class="modal-head"><div class="modal-title">Importa Estratto Conto</div><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="modal-body">
-      <div class="field mb-4"><label>Banca</label><select id="ec-banca" class="inp"><option value="unicredit">UniCredit</option><option value="bpm">Banco BPM</option><option value="generic">Generico CSV</option></select></div>
+      <div class="field mb-4"><label>Banca</label><select id="ec-banca" class="inp"><option value="bpm">Banco BPM</option><option value="generic">Generico CSV</option><option value="unicredit">UniCredit</option></select></div>
       <div class="drop" onclick="$('ec-file').click()">
         <span class="drop-icon">📄</span>
         <div class="drop-label">Seleziona file CSV</div>
-        <div class="drop-sub">Estratto conto UniCredit, Banco BPM o CSV generico</div>
+        <div class="drop-sub">Estratto conto Banco BPM o CSV generico</div>
         <input id="ec-file" type="file" accept=".csv,.txt" style="display:none" onchange="uploadCSV(this)">
       </div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;font-size:13px;font-weight:500;text-transform:none;letter-spacing:0;color:var(--text2)">
