@@ -642,9 +642,7 @@ function alertBadge(f){
 }
 
 PAGES['fatture'] = async function(){
-  $('tb-actions').innerHTML = `
-    <button class="btn btn-ghost btn-sm" onclick="migrazioneNomiFornitori()" title="Popola nomi fornitori mancanti dall'anagrafica">🔄 Ripara nomi</button>
-    <button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML / P7M</button>`;
+  $('tb-actions').innerHTML = `<button class="btn btn-primary btn-sm" onclick="modalUploadFatture()">📥 Importa XML / P7M</button>`;
   $('content').innerHTML = `
     <div class="card card-body mb-5">
       <div class="flex gap-3 flex-wrap items-end">
@@ -1032,14 +1030,6 @@ async function pagaFattura(id){
   } catch(e){ err(e.message); }
 }
 
-async function migrazioneNomiFornitori(){
-  try{
-    const r = await POST('/api/fatture/migrazione-nomi', {});
-    ok(`Aggiornate ${r.aggiornate} fatture`);
-    loadFatture();
-  } catch(e){ err(e.message); }
-}
-
 const _timers={};
 function debounce(fn,ms){ return function(){clearTimeout(_timers[fn]);_timers[fn]=setTimeout(fn,ms);}; }
 
@@ -1211,16 +1201,21 @@ async function switchPN(tipo,btn){
       const data=await GET(`/api/prima-nota/${tipo}?limit=200`);
       const list=data?.movimenti||data||[];
       const saldo=list.reduce((s,m)=>s+(m.tipo==='entrata'?+m.importo:-+m.importo),0);
+      const altra=tipo==='cassa'?'banca':'cassa';
       $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalNuovoMov('${tipo}')">+ Movimento</button>`;
       el.innerHTML=`<div class="tbl-wrap">
         <div class="tbl-summary"><span>${list.length} movimenti</span><span>Saldo: <strong style="color:${saldo>=0?'var(--green)':'var(--red)'}">${euro(saldo)}</strong></span></div>
-        <table><thead><tr><th>Data</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Categoria</th></tr></thead>
+        <table><thead><tr><th>Data</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Categoria</th><th></th></tr></thead>
         <tbody>${list.map(m=>`<tr>
           <td>${fmtDate(m.data)}</td>
           <td style="max-width:260px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
           <td>${m.tipo==='entrata'?'<span class="badge badge-green">↑ Entrata</span>':'<span class="badge badge-red">↓ Uscita</span>'}</td>
           <td style="font-weight:700;color:${m.tipo==='entrata'?'var(--green)':'var(--red)'}">${euro(m.importo)}</td>
           <td style="font-size:12px;color:var(--text3)">${m.categoria||'–'}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','${altra}')" title="Sposta in ${altra}">→ ${altra}</button>
+            <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','provvisori')" title="Sposta in provvisori">→ prov.</button>
+          </td>
         </tr>`).join('')}</tbody></table></div>`;
     }
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
@@ -1244,6 +1239,15 @@ async function saveMov(tipo){
   try{await POST(`/api/prima-nota/${tipo}`,{data:$('nm-data').value,tipo:$('nm-tipo').value,descrizione:$('nm-desc').value,importo:parseFloat($('nm-imp').value)||0,categoria:$('nm-cat').value});ok('Movimento salvato');closeModal();switchPN(tipo);}
   catch(e){err(e.message);}
 }
+async function spostaMovimento(id, da, a){
+  const dest = a==='provvisori' ? 'provvisori' : a;
+  if(!confirm(`Sposta questo movimento da ${da} a ${dest}?`)) return;
+  try{
+    await POST('/api/prima-nota/sposta', {movimento_id: id, da, a: dest==='provvisori'?da:dest});
+    ok(`Movimento spostato in ${dest}`);
+    switchPN(da);
+  }catch(e){err(e.message);}
+}
 async function riconciliaTutti(){
   try{const r=await POST('/api/estratto-conto/riconcilia-tutti');ok(`Riconciliati: ${r?.riconciliati||0}`);switchPN('provvisori');}
   catch(e){err(e.message);}
@@ -1264,6 +1268,7 @@ async function loadEstratto(){
   try{
     const data=await GET('/api/estratto-conto?limit=200');
     const list=data?.movimenti||data||[];
+    if(!list.length){el.innerHTML=`<div class="card">${emptyState('🏦','Nessun movimento importato','Usa "Importa CSV" per caricare l\'estratto conto bancario')}</div>`;return;}
     const pending=list.filter(m=>!m.riconciliato).length;
     el.innerHTML=`
       ${pending>0?`<div class="alert alert-warn mb-4">⚠️ ${pending} movimenti non riconciliati</div>`:''}
@@ -1338,16 +1343,27 @@ async function loadCorr(){
     el.innerHTML=`
       ${disc>0?`<div class="alert alert-warn mb-4">⚠️ ${disc} discrepanze rilevate tra fonti POS</div>`:''}
       <div class="tbl-wrap">
-        <table><thead><tr><th>Data</th><th>XML (A)</th><th>Dichiarato (B)</th><th>Banca (C)</th><th>Δ A−B</th><th>Stato</th></tr></thead>
+        <table><thead><tr>
+          <th>Data</th>
+          <th>Totale (A)</th>
+          <th>di cui Contanti</th>
+          <th>POS dichiarato (B)</th>
+          <th>POS banca (C)</th>
+          <th>Δ B−C</th>
+          <th>Stato</th>
+          <th></th>
+        </tr></thead>
         <tbody>${list.map(c=>`<tr style="${c.alert_discrepanza?'background:#fffbeb':''}">
           <td>${fmtDate(c.data||c.giorno)}</td>
-          <td style="font-weight:600">${euro(c.totale_xml||c.importo_xml)}</td>
-          <td>${euro(c.totale_dichiarato||c.importo_dichiarato)}</td>
-          <td>${euro(c.totale_banca||c.importo_banca)}</td>
-          <td style="font-weight:700;color:${Math.abs((c.totale_xml||0)-(c.totale_dichiarato||0))>1?'var(--red)':'var(--green)'}">
-            ${euro(Math.abs((c.totale_xml||0)-(c.totale_dichiarato||0)))}
+          <td style="font-weight:700">${euro(c.totale)}</td>
+          <td style="color:var(--text3)">${euro(c.contanti)}</td>
+          <td>${euro(c.pos_dichiarato??c.elettronico)}</td>
+          <td>${euro(c.pos_banca)}</td>
+          <td style="font-weight:700;color:${Math.abs((c.pos_dichiarato??c.elettronico??0)-(c.pos_banca??0))>0.5?'var(--red)':'var(--green)'}">
+            ${euro(Math.abs((c.pos_dichiarato??c.elettronico??0)-(c.pos_banca??0)))}
           </td>
           <td>${c.alert_discrepanza?'<span class="badge badge-yellow">⚠️ Discrepanza</span>':'<span class="badge badge-green">✓ OK</span>'}</td>
+          <td><button class="btn btn-ghost btn-xs" onclick="modalAggiornaPOS('${c._id}',${c.pos_dichiarato??c.elettronico??0})">✏️ POS</button></td>
         </tr>`).join('')}</tbody></table></div>`;
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
 }
@@ -1357,17 +1373,48 @@ function modalNuovoCorr(){
     <div class="modal-body">
       <div class="field-row">
         <div class="field span2"><label>Data</label><input id="nc-data" type="date" class="inp" value="${today()}"></div>
-        <div class="field"><label>Totale XML €</label><input id="nc-xml" type="number" step="0.01" class="inp" placeholder="0.00"></div>
-        <div class="field"><label>Dichiarato €</label><input id="nc-dich" type="number" step="0.01" class="inp" placeholder="0.00"></div>
-        <div class="field span2"><label>Incassato Banca €</label><input id="nc-banca" type="number" step="0.01" class="inp" placeholder="0.00"></div>
+        <div class="field"><label>Totale incassato €</label><input id="nc-tot" type="number" step="0.01" class="inp" placeholder="0.00"></div>
+        <div class="field"><label>di cui Contanti €</label><input id="nc-cont" type="number" step="0.01" class="inp" placeholder="0.00"></div>
+        <div class="field"><label>di cui POS / Elettronico €</label><input id="nc-pos" type="number" step="0.01" class="inp" placeholder="0.00"></div>
       </div>
+      <div style="font-size:12px;color:var(--text3);margin-top:8px">Il POS verrà accreditato sul conto bancario il giorno successivo.</div>
     </div>
     <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Annulla</button><button class="btn btn-primary" onclick="saveCorr()">Salva</button></div>
   </div>`);
 }
 async function saveCorr(){
-  try{await POST('/api/corrispettivi',{data:$('nc-data').value,totale_xml:+$('nc-xml').value||0,totale_dichiarato:+$('nc-dich').value||0,totale_banca:+$('nc-banca').value||0});ok('Corrispettivo salvato');closeModal();loadCorr();}
-  catch(e){err(e.message);}
+  const tot  = +$('nc-tot').value  || 0;
+  const cont = +$('nc-cont').value || 0;
+  const pos  = +$('nc-pos').value  || 0;
+  try{
+    await POST('/api/corrispettivi/manuale',{
+      data:       $('nc-data').value,
+      totale:     tot,
+      contanti:   cont,
+      elettronico: pos,
+    });
+    ok('Corrispettivo salvato'); closeModal(); loadCorr();
+  }catch(e){err(e.message);}
+}
+function modalAggiornaPOS(id, attuale){
+  openModal(`<div class="modal">
+    <div class="modal-head"><div class="modal-title">Aggiorna accredito POS banca</div><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-body">
+      <div class="field"><label>Importo accreditato dalla banca €</label>
+        <input id="pos-imp" type="number" step="0.01" class="inp" value="${attuale}">
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
+      <button class="btn btn-primary" onclick="salvaPosBanca('${id}')">Salva</button>
+    </div>
+  </div>`);
+}
+async function salvaPosBanca(id){
+  try{
+    await POST(`/api/corrispettivi/${id}/pos-dichiarato`,{importo_dichiarato:+$('pos-imp').value||0});
+    ok('POS aggiornato'); closeModal(); loadCorr();
+  }catch(e){err(e.message);}
 }
 
 /* ═══════════════════════════════════════════════════════
