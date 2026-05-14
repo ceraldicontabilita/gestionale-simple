@@ -1593,7 +1593,7 @@ async function riconciliaAll(){
 PAGES['corrispettivi']=async function(){
   $('tb-actions').innerHTML=`
     <button class="btn btn-ghost btn-sm" onclick="$('corr-xml-file').click()">📥 Importa XML</button>
-    <input id="corr-xml-file" type="file" accept=".xml" multiple style="display:none" onchange="uploadCorrXML(this)">
+    <input id="corr-xml-file" type="file" accept=".xml,text/xml,application/xml,*/*" multiple style="display:none" onchange="uploadCorrXML(this)">
     <button class="btn btn-primary btn-sm" onclick="modalNuovoCorr()">+ Nuovo</button>`;
   $('content').innerHTML=`
     <div class="flex gap-3 mb-5">
