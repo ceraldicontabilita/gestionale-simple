@@ -82,6 +82,56 @@ async def _migra_nomi_fornitori():
         print(f"⚠️  Migration nomi fornitori: {e}")
 
 
+async def _migra_nomi_da_xml():
+    """
+    Per le fatture con fornitore_nome ancora vuoto dopo la migration da fornitori,
+    ri-estrae il nome dall'raw_xml salvato usando il parser corrente.
+    Aggiorna anche la ragione_sociale del fornitore se era vuota.
+    """
+    try:
+        from app.database import get_db
+        from app.services.xml_parser import parse_fattura_xml
+        db = get_db()
+        docs = await db["invoices"].find(
+            {
+                "$or": [{"fornitore_nome": ""}, {"fornitore_nome": None},
+                        {"fornitore_nome": {"$exists": False}}],
+                "raw_xml": {"$exists": True, "$ne": ""},
+            },
+            {"_id": 1, "fornitore_piva": 1, "raw_xml": 1}
+        ).to_list(length=None)
+
+        aggiornate = 0
+        for d in docs:
+            raw = d.get("raw_xml", "")
+            if not raw:
+                continue
+            try:
+                parsed = parse_fattura_xml(raw.encode("utf-8", errors="replace"))
+                nome = parsed.get("fornitore_nome", "").strip()
+            except Exception:
+                continue
+            if not nome:
+                continue
+            await db["invoices"].update_one(
+                {"_id": d["_id"]}, {"$set": {"fornitore_nome": nome}}
+            )
+            piva = d.get("fornitore_piva", "")
+            if piva:
+                await db["fornitori"].update_one(
+                    {"partita_iva": piva,
+                     "$or": [{"ragione_sociale": ""}, {"ragione_sociale": None},
+                              {"ragione_sociale": {"$exists": False}}]},
+                    {"$set": {"ragione_sociale": nome}},
+                )
+            aggiornate += 1
+
+        if aggiornate:
+            print(f"✅ Migration XML nomi: estratti {aggiornate} fornitore_nome da raw_xml")
+    except Exception as e:
+        print(f"⚠️  Migration nomi da XML: {e}")
+
+
 async def _migra_corrispettivi():
     """Imposta contanti=0 e elettronico=0 sui corrispettivi che non hanno questi campi."""
     try:
@@ -107,6 +157,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_cleanup_fornitori_orphan())
         asyncio.create_task(_migra_nomi_fornitori())
         asyncio.create_task(_migra_corrispettivi())
+        asyncio.create_task(_migra_nomi_da_xml())
     except Exception as e:
         print(f"⚠️  MongoDB non raggiungibile: {e}")
     yield
