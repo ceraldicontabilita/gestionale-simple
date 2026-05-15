@@ -25,6 +25,7 @@ async def lista_fornitori(
     request: Request,
     cerca:   Optional[str] = Query(None),
     metodo:  Optional[str] = Query(None),
+    anno:    Optional[int] = Query(None),
     limit:   int           = Query(300),
 ):
     verify_token(request)
@@ -69,8 +70,8 @@ async def lista_fornitori(
                         {"_id": d["_id"]}, {"$set": {"ragione_sociale": nome}}
                     )
 
-    # Arricchisci con totale fatturato e conteggio anno corrente
-    anno = datetime.now().year
+    # Arricchisci con totale fatturato e conteggio anno (usa anno query param o anno corrente)
+    anno = anno or datetime.now().year
     pive = [d.get("partita_iva", "") for d in docs if d.get("partita_iva")]
     if pive:
         pipeline = [
@@ -388,5 +389,4 @@ async def lookup_cciaa(request: Request, piva: str):
             return {"ok": True, "dati": data}
         else:
             return {"ok": False, "status": resp.status_code}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Errore lookup: {e}")
+    except Exception a
