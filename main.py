@@ -185,7 +185,6 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_migra_nomi_fornitori())
         asyncio.create_task(_migra_corrispettivi())
         asyncio.create_task(_migra_nomi_da_xml())
-        asyncio.create_task(_repair_fornitori_from_pec())
     except Exception as e:
         print(f"⚠️  MongoDB non raggiungibile: {e}")
     yield
