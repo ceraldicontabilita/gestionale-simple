@@ -69,6 +69,28 @@ async def lista_fornitori(
     return {"fornitori": [_ser(d) for d in docs], "totale": len(docs)}
 
 
+# ── GET /api/fornitori/stats ─────────────────────────────────────────────────
+@router.get("/stats")
+async def fornitori_stats(request: Request):
+    verify_token(request)
+    anno = datetime.now().year
+    totale = await col_fornitori().count_documents({
+        "$or": [{"ragione_sociale": {"$nin": [None, ""]}}, {"partita_iva": {"$nin": [None, ""]}}]
+    })
+    pipeline = [
+        {"$match": {"anno": anno}},
+        {"$group": {"_id": "$fornitore_piva", "totale": {"$sum": "$importo_totale"}, "count": {"$sum": 1}}},
+        {"$sort": {"totale": -1}},
+        {"$limit": 10},
+    ]
+    top_forn = await col_invoices().aggregate(pipeline).to_list(10)
+    return {
+        "totale_fornitori": totale,
+        "anno":             anno,
+        "top_fornitori":    top_forn,
+    }
+
+
 # ── GET /api/fornitori/{piva} ─────────────────────────────────────────────────
 @router.get("/{piva}")
 async def dettaglio_fornitore(request: Request, piva: str):
@@ -186,28 +208,6 @@ async def classifica_iva(request: Request, piva: str):
         }}
     )
     return {"ok": True, "classificazione": result}
-
-
-# ── GET /api/fornitori/stats ─────────────────────────────────────────────────
-@router.get("/stats")
-async def fornitori_stats(request: Request):
-    verify_token(request)
-    anno = datetime.now().year
-    totale = await col_fornitori().count_documents({
-        "$or": [{"ragione_sociale": {"$nin": [None, ""]}}, {"partita_iva": {"$nin": [None, ""]}}]
-    })
-    pipeline = [
-        {"$match": {"anno": anno}},
-        {"$group": {"_id": "$fornitore_piva", "totale": {"$sum": "$importo_totale"}, "count": {"$sum": 1}}},
-        {"$sort": {"totale": -1}},
-        {"$limit": 10},
-    ]
-    top_forn = await col_invoices().aggregate(pipeline).to_list(10)
-    return {
-        "totale_fornitori": totale,
-        "anno":             anno,
-        "top_fornitori":    top_forn,
-    }
 
 
 # ── GET /api/fornitori/{piva}/fatture ─────────────────────────────────────────
