@@ -266,6 +266,38 @@ async def lista_fatture(
     }
 
 
+# ── GET /api/fatture/debug-nomi ── TEMPORANEO ────────────────────────────────
+@router.get("/debug-nomi")
+async def debug_nomi(request: Request):
+    """Diagnostica: mostra le prime 10 fatture senza fornitore_nome."""
+    verify_token(request)
+    docs = await col_invoices().find(
+        {"$or": [{"fornitore_nome": {"$in": [None, ""]}},
+                  {"fornitore_nome": {"$exists": False}}]},
+        {"_id": 1, "numero_fattura": 1, "fornitore_nome": 1, "fornitore_piva": 1,
+         "fornitore_cf": 1, "metodo_pagamento": 1, "anno": 1,
+         "raw_xml": {"$slice": 500}},
+    ).limit(10).to_list(length=10)
+    result = []
+    for d in docs:
+        raw_preview = (d.get("raw_xml") or "")[:300]
+        has_cedente = "CedentePrestatore" in raw_preview or "cedenteprestatore" in raw_preview.lower()
+        result.append({
+            "_id":              str(d.get("_id", "")),
+            "numero_fattura":   d.get("numero_fattura", ""),
+            "fornitore_nome":   d.get("fornitore_nome", ""),
+            "fornitore_piva":   d.get("fornitore_piva", ""),
+            "fornitore_cf":     d.get("fornitore_cf", ""),
+            "metodo_pagamento": d.get("metodo_pagamento", ""),
+            "anno":             d.get("anno", ""),
+            "has_raw_xml":      bool(d.get("raw_xml")),
+            "raw_xml_chars":    len(d.get("raw_xml") or ""),
+            "has_cedente_tag":  has_cedente,
+            "raw_xml_preview":  raw_preview,
+        })
+    return {"count": len(result), "fatture": result}
+
+
 # ── GET /api/fatture/scadenzario ──────────────────────────────────────────────
 
 @router.get("/scadenzario")
