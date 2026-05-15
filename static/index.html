@@ -349,21 +349,118 @@ function emptyState(icon,msg,sub=''){
 }
 
 /* ═══════════════════════════════════════════════════════
-   API
+   API — con retry su 503/504 e cache sessionStorage
 ═══════════════════════════════════════════════════════ */
-async function api(method,url,body=null,isForm=false){
-  const opts={method,credentials:'include',headers:{}};
-  if(body&&!isForm){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(body);}
-  if(body&&isForm){opts.body=body;}
-  const r=await fetch(url,opts);
-  if(r.status===401){showLogin();return null;}
-  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||`Errore ${r.status}`);}
-  return r.json().catch(()=>null);
+
+// Cache chiave→risposta (dura per tutta la sessione browser)
+const _apiCache = {
+  _store: (() => { try { return sessionStorage; } catch { return null; } })(),
+  key: url => 'api:' + url,
+  get(url) {
+    try { const v = this._store?.getItem(this.key(url)); return v ? JSON.parse(v) : null; } catch { return null; }
+  },
+  set(url, data) {
+    try { this._store?.setItem(this.key(url), JSON.stringify(data)); } catch {}
+  },
+  clear(prefix) {
+    try {
+      const keys = Object.keys(this._store || {}).filter(k => k.startsWith('api:' + (prefix||'')));
+      keys.forEach(k => this._store.removeItem(k));
+    } catch {}
+  }
+};
+
+// Mostra avviso "server in avvio" non bloccante sopra l'eventuale contenuto cache
+function _showWakingBanner(el) {
+  const existing = el?.querySelector?.('.waking-banner');
+  if (existing || !el) return;
+  const div = document.createElement('div');
+  div.className = 'waking-banner';
+  div.style.cssText = 'background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#9a3412;display:flex;align-items:center;gap:8px';
+  div.innerHTML = '<span style="font-size:16px">⏳</span><span>Server in avvio — dati dalla cache locale, aggiornamento in corso…</span>';
+  el.prepend(div);
 }
-const GET=(url)=>api('GET',url);
-const POST=(url,b,f)=>api('POST',url,b,f);
-const PUT=(url,b)=>api('PUT',url,b);
-const DEL=(url)=>api('DELETE',url);
+function _hideWakingBanner(el) {
+  el?.querySelector?.('.waking-banner')?.remove();
+}
+
+async function api(method, url, body=null, isForm=false) {
+  const opts = { method, credentials: 'include', headers: {} };
+  if (body && !isForm) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  if (body && isForm) { opts.body = body; }
+
+  const maxRetries = (method === 'GET') ? 4 : 1;
+  const delays = [2000, 4000, 8000, 16000];
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const r = await fetch(url, opts);
+      if (r.status === 401) { showLogin(); return null; }
+      if (r.status === 503 || r.status === 504 || r.status === 502) {
+        if (attempt < maxRetries - 1) { await new Promise(res => setTimeout(res, delays[attempt])); continue; }
+        throw new Error(`Server non disponibile (${r.status}) — riprova tra qualche secondo`);
+      }
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Errore ${r.status}`); }
+      const data = await r.json().catch(() => null);
+      return data;
+    } catch (e) {
+      if (attempt < maxRetries - 1 && method === 'GET') {
+        await new Promise(res => setTimeout(res, delays[attempt]));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+// GET con cache: mostra subito dati cache, poi aggiorna se il server risponde
+// Se il server restituisce lista vuota e la cache ha dati, mantiene la cache
+async function GET(url) {
+  return api('GET', url);
+}
+
+// GET con stale-while-revalidate — per liste principali di pagina
+// renderFn(data, fromCache) viene chiamata subito con cache poi di nuovo con dati freschi
+async function GETcached(url, renderFn, containerEl) {
+  const cached = _apiCache.get(url);
+  if (cached) {
+    renderFn(cached, true);
+  }
+
+  try {
+    const fresh = await api('GET', url);
+    if (fresh == null) return cached;
+
+    // Considera la risposta vuota solo se non c'è cache o se è esplicitamente filtrata
+    const hasData = _hasData(fresh);
+    if (!hasData && cached && _hasData(cached)) {
+      _showWakingBanner(containerEl);
+      return cached;
+    }
+
+    _hideWakingBanner(containerEl);
+    _apiCache.set(url, fresh);
+    renderFn(fresh, false);
+    return fresh;
+  } catch (e) {
+    if (cached) {
+      _showWakingBanner(containerEl);
+      return cached;
+    }
+    throw e;
+  }
+}
+
+function _hasData(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  // Controlla array diretti o proprietà array comuni
+  if (Array.isArray(obj)) return obj.length > 0;
+  return Object.values(obj).some(v => Array.isArray(v) ? v.length > 0 : (v != null && v !== 0));
+}
+
+const POST = (url, b, f) => { _apiCache.clear(); return api('POST', url, b, f); };
+const PUT  = (url, b)    => { _apiCache.clear(); return api('PUT',  url, b); };
+const DEL  = (url)       => { _apiCache.clear(); return api('DELETE', url); };
 
 /* ═══════════════════════════════════════════════════════
    TOAST
@@ -685,90 +782,103 @@ PAGES['fatture'] = async function(){
   loadFatture();
 };
 
+function _renderFattureLista(data, el) {
+  const list = data?.fatture || [];
+  const kpi  = data?.kpi || {};
+  if (!list.length) {
+    el.innerHTML = `<div class="card">${emptyState('🧾','Nessuna fattura trovata')}</div>`;
+    return;
+  }
+  const kpiHtml = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <div class="card card-body" style="padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IMPONIBILE</div>
+        <div style="font-size:18px;font-weight:800">${euro(kpi.imponibile||0)}</div>
+      </div>
+      <div class="card card-body" style="padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA</div>
+        <div style="font-size:18px;font-weight:800">${euro(kpi.iva||0)}</div>
+      </div>
+      <div class="card card-body" style="padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">TOTALE</div>
+        <div style="font-size:18px;font-weight:800;color:var(--indigo)">${euro(kpi.totale||0)}</div>
+      </div>
+      <div class="card card-body" style="padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA DETRAIBILE</div>
+        <div style="font-size:18px;font-weight:800;color:var(--green)">${euro(kpi.iva_detr||0)}</div>
+      </div>
+    </div>`;
+  const righe = list.map(f => {
+    const alerts = alertBadge(f);
+    const esc = s => (s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    return `<tr onclick="modalDettaglioFattura('${f._id}')" style="cursor:pointer">
+      <td class="font-mono" style="font-size:11px;white-space:nowrap">${f.numero_fattura||'–'}</td>
+      <td style="white-space:nowrap">${fmtDate(f.data_fattura)}</td>
+      <td>${tipoDocBadge(f.tipo_documento)}</td>
+      <td style="font-weight:600;max-width:200px">
+        <div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.fornitore_nome||f.fornitore_piva||'–'}</div>
+        ${alerts ? `<div style="margin-top:3px">${alerts}</div>` : ''}
+      </td>
+      <td style="font-family:monospace;text-align:right">${euro(f.importo_imponibile)}</td>
+      <td style="font-family:monospace;text-align:right">${euro(f.importo_iva)}</td>
+      <td style="font-family:monospace;text-align:right;font-weight:700">${euro(f.importo_totale)}</td>
+      <td style="white-space:nowrap">${fmtDate(f.data_scadenza)||'–'}</td>
+      <td style="font-size:12px">${metodoLabel(f.metodo_pagamento)}</td>
+      <td>${badge(f.stato||'da_pagare')}</td>
+      <td style="text-align:right;white-space:nowrap" onclick="event.stopPropagation()">
+        ${(f.stato==='da_pagare'||f.stato==='scaduta'||f.stato==='da_classificare') ?
+          `<button class="btn btn-success btn-xs" onclick="modalPagaFattura('${f._id}','${esc(f.fornitore_nome)}',${f.importo_totale||0})">Paga</button> ` : ''}
+        <button class="btn btn-ghost btn-xs" onclick="modalEditFattura('${f._id}','${esc(f.fornitore_nome)}','${esc(f.metodo_pagamento)}','${f.data_scadenza||''}','${f.stato||''}')">✏️</button>
+      </td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = kpiHtml + `
+    <div class="tbl-wrap">
+      <div class="tbl-summary"><span>${list.length} fatture (su ${data.totale||list.length} totali)</span></div>
+      <table>
+        <thead><tr>
+          <th>N° Fattura</th><th>Data</th><th>Tipo</th><th>Fornitore</th>
+          <th style="text-align:right">Imponibile</th><th style="text-align:right">IVA</th>
+          <th style="text-align:right">Totale</th><th>Scadenza</th>
+          <th>Metodo pag.</th><th>Stato</th><th></th>
+        </tr></thead>
+        <tbody>${righe}</tbody>
+      </table>
+    </div>`;
+}
+
 async function loadFatture(){
-  const anno   = $('f-anno')?.value  || new Date().getFullYear();
-  const stato  = $('f-stato')?.value || '';
-  const tipo   = $('f-tipo')?.value  || '';
-  const cerca  = $('f-cerca')?.value || '';
+  const anno  = $('f-anno')?.value  || new Date().getFullYear();
+  const stato = $('f-stato')?.value || '';
+  const tipo  = $('f-tipo')?.value  || '';
+  const cerca = $('f-cerca')?.value || '';
   const el = $('fat-body');
   if(!el) return;
-  el.innerHTML = loading();
-  try{
-    let url = `/api/fatture?anno=${anno}&limit=500`;
-    if(stato) url += `&stato=${encodeURIComponent(stato)}`;
-    if(tipo)  url += `&tipo_documento=${encodeURIComponent(tipo)}`;
-    if(cerca) url += `&cerca=${encodeURIComponent(cerca)}`;
-    const data = await GET(url);
-    const list = data?.fatture || [];
-    const kpi  = data?.kpi || {};
 
-    if(!list.length){
+  let url = `/api/fatture?anno=${anno}&limit=500`;
+  if(stato) url += `&stato=${encodeURIComponent(stato)}`;
+  if(tipo)  url += `&tipo_documento=${encodeURIComponent(tipo)}`;
+  if(cerca) url += `&cerca=${encodeURIComponent(cerca)}`;
+
+  const isFiltered = !!(stato || tipo || cerca);
+  const cached = _apiCache.get(url);
+  if(cached) _renderFattureLista(cached, el);
+  else el.innerHTML = loading();
+
+  try {
+    const data = await api('GET', url);
+    if(data?.fatture?.length > 0 || isFiltered) {
+      _apiCache.set(url, data);
+      _renderFattureLista(data, el);
+      _hideWakingBanner(el);
+    } else if(!cached) {
       el.innerHTML = `<div class="card">${emptyState('🧾','Nessuna fattura trovata')}</div>`;
-      return;
+    } else {
+      _showWakingBanner(el);
     }
-
-    // KPI cards
-    const kpiHtml = `
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-        <div class="card card-body" style="padding:14px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IMPONIBILE</div>
-          <div style="font-size:18px;font-weight:800">${euro(kpi.imponibile||0)}</div>
-        </div>
-        <div class="card card-body" style="padding:14px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA</div>
-          <div style="font-size:18px;font-weight:800">${euro(kpi.iva||0)}</div>
-        </div>
-        <div class="card card-body" style="padding:14px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">TOTALE</div>
-          <div style="font-size:18px;font-weight:800;color:var(--indigo)">${euro(kpi.totale||0)}</div>
-        </div>
-        <div class="card card-body" style="padding:14px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">IVA DETRAIBILE</div>
-          <div style="font-size:18px;font-weight:800;color:var(--green)">${euro(kpi.iva_detr||0)}</div>
-        </div>
-      </div>`;
-
-    // Tabella fatture
-    const righe = list.map(f => {
-      const alerts = alertBadge(f);
-      const esc = s => (s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-      return `<tr onclick="modalDettaglioFattura('${f._id}')" style="cursor:pointer">
-        <td class="font-mono" style="font-size:11px;white-space:nowrap">${f.numero_fattura||'–'}</td>
-        <td style="white-space:nowrap">${fmtDate(f.data_fattura)}</td>
-        <td>${tipoDocBadge(f.tipo_documento)}</td>
-        <td style="font-weight:600;max-width:200px">
-          <div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.fornitore_nome||f.fornitore_piva||'–'}</div>
-          ${alerts ? `<div style="margin-top:3px">${alerts}</div>` : ''}
-        </td>
-        <td style="font-family:monospace;text-align:right">${euro(f.importo_imponibile)}</td>
-        <td style="font-family:monospace;text-align:right">${euro(f.importo_iva)}</td>
-        <td style="font-family:monospace;text-align:right;font-weight:700">${euro(f.importo_totale)}</td>
-        <td style="white-space:nowrap">${fmtDate(f.data_scadenza)||'–'}</td>
-        <td style="font-size:12px">${metodoLabel(f.metodo_pagamento)}</td>
-        <td>${badge(f.stato||'da_pagare')}</td>
-        <td style="text-align:right;white-space:nowrap" onclick="event.stopPropagation()">
-          ${(f.stato==='da_pagare'||f.stato==='scaduta'||f.stato==='da_classificare') ?
-            `<button class="btn btn-success btn-xs" onclick="modalPagaFattura('${f._id}','${esc(f.fornitore_nome)}',${f.importo_totale||0})">Paga</button> ` : ''}
-          <button class="btn btn-ghost btn-xs" onclick="modalEditFattura('${f._id}','${esc(f.fornitore_nome)}','${esc(f.metodo_pagamento)}','${f.data_scadenza||''}','${f.stato||''}')">✏️</button>
-        </td>
-      </tr>`;
-    }).join('');
-
-    el.innerHTML = kpiHtml + `
-      <div class="tbl-wrap">
-        <div class="tbl-summary"><span>${list.length} fatture (su ${data.totale} totali)</span></div>
-        <table>
-          <thead><tr>
-            <th>N° Fattura</th><th>Data</th><th>Tipo</th><th>Fornitore</th>
-            <th style="text-align:right">Imponibile</th><th style="text-align:right">IVA</th>
-            <th style="text-align:right">Totale</th><th>Scadenza</th>
-            <th>Metodo pag.</th><th>Stato</th><th></th>
-          </tr></thead>
-          <tbody>${righe}</tbody>
-        </table>
-      </div>`;
-  } catch(e){
-    el.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  } catch(e) {
+    if(!cached) el.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+    else _showWakingBanner(el);
   }
 }
 
@@ -1047,13 +1157,8 @@ PAGES['fornitori']=async function(){
     <div id="fo-body">${loading()}</div>`;
   loadFornitori();
 };
-async function loadFornitori(){
-  const cerca=$('fo-cerca')?.value||'';
-  const el=$('fo-body'); if(!el)return;
-  el.innerHTML=loading();
-  try{
-    const data=await GET(`/api/fornitori?limit=500${cerca?'&cerca='+encodeURIComponent(cerca):''}`);
-    const list=data?.fornitori||data||[];
+function _renderForniLista(data, el){
+  const list=data?.fornitori||data||[];
     if(!list.length){el.innerHTML=`<div class="card">${emptyState('🏢','Nessun fornitore trovato')}</div>`;return;}
     const anno=new Date().getFullYear();
     const senzaNome=list.filter(f=>!(f.ragione_sociale||'').trim()).length;
@@ -1093,7 +1198,26 @@ async function loadFornitori(){
           <td style="text-align:right;font-weight:700;color:${f.totale_fatturato>0?'var(--indigo)':'var(--text3)'}">${f.totale_fatturato>0?euro(f.totale_fatturato):'–'}</td>
         </tr>`;
       }).join('')}</tbody></table></div>`;
-  }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
+}
+
+async function loadFornitori(){
+  const cerca=$('fo-cerca')?.value||'';
+  const el=$('fo-body'); if(!el)return;
+  const url=`/api/fornitori?limit=500${cerca?'&cerca='+encodeURIComponent(cerca):''}`;
+  const isFiltered=!!cerca;
+  const cached=_apiCache.get(url);
+  if(cached) _renderForniLista(cached,el);
+  else el.innerHTML=loading();
+  try{
+    const data=await api('GET',url);
+    const list=data?.fornitori||data||[];
+    if(list.length>0||isFiltered){_apiCache.set(url,data);_renderForniLista(data,el);_hideWakingBanner(el);}
+    else if(!cached){_renderForniLista(data,el);}
+    else{_showWakingBanner(el);}
+  }catch(e){
+    if(!cached)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;
+    else _showWakingBanner(el);
+  }
 }
 
 async function openFornitore(piva){
@@ -1493,9 +1617,9 @@ PAGES['prima-nota']=async function(){
 async function switchPN(tipo,btn){
   if(btn){qsa('#pn-tabs .tab').forEach(t=>t.classList.toggle('active',t.dataset.t===tipo));}
   const el=$('pn-body'); if(!el)return;
-  el.innerHTML=loading();
-  try{
-    if(tipo==='provvisori'){
+  if(tipo==='provvisori'){
+    el.innerHTML=loading();
+    try{
       const [dataProv, dataFatt] = await Promise.all([
         GET('/api/prima-nota/provvisori?limit=200'),
         GET('/api/fatture?stato=da_classificare&limit=100'),
@@ -1540,13 +1664,14 @@ async function switchPN(tipo,btn){
           <tbody>${rowsFatt}</tbody></table>
         </div>
       </div>`;
-    } else {
-      const data=await GET(`/api/prima-nota/${tipo}?limit=200`);
+    }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
+  } else {
+    const url=`/api/prima-nota/${tipo}?limit=200`;
+    const altra=tipo==='cassa'?'banca':'cassa';
+    $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalNuovoMov('${tipo}')">+ Movimento</button>`;
+    function _renderPN(data){
       const list=data?.movimenti||data||[];
       const saldo=list.reduce((s,m)=>s+(m.tipo==='entrata'?+m.importo:-+m.importo),0);
-      const altra=tipo==='cassa'?'banca':'cassa';
-      $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalNuovoMov('${tipo}')">+ Movimento</button>`;
-      // Running saldo: list is newest-first, reverse to accumulate from oldest then flip back
       let _acc=0;
       const _saldi=[...list].reverse().map(m=>{_acc+=(m.tipo==='entrata'?+m.importo:-+m.importo);return _acc;}).reverse();
       el.innerHTML=`<div class="tbl-wrap">
@@ -1565,7 +1690,16 @@ async function switchPN(tipo,btn){
           </td>
         </tr>`;}).join('')}</tbody></table></div>`;
     }
-  }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
+    const cached=_apiCache.get(url);
+    if(cached) _renderPN(cached); else el.innerHTML=loading();
+    try{
+      const data=await api('GET',url);
+      const list=data?.movimenti||data||[];
+      if(list.length>0){_apiCache.set(url,data);_renderPN(data);_hideWakingBanner(el);}
+      else if(!cached){_renderPN(data);}
+      else{_showWakingBanner(el);}
+    }catch(e){if(!cached)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;else _showWakingBanner(el);}
+  }
 }
 function modalNuovoMov(tipo){
   openModal(`<div class="modal">
@@ -1704,12 +1838,21 @@ PAGES['corrispettivi']=async function(){
 };
 async function loadCorr(){
   const el=$('co-body'); if(!el)return;
-  el.innerHTML=loading();
+  const anno=$('co-anno')?.value||2026, mese=$('co-mese')?.value||'';
+  const url=`/api/corrispettivi?anno=${anno}&limit=200${mese?'&mese='+mese:''}`;
+  const cached=_apiCache.get(url);
+  if(cached) _renderCorr(cached,el); else el.innerHTML=loading();
   try{
-    const anno=$('co-anno')?.value||2026, mese=$('co-mese')?.value||'';
-    const data=await GET(`/api/corrispettivi?anno=${anno}&limit=200${mese?'&mese='+mese:''}`);
+    const data=await api('GET',url);
     const list=data?.corrispettivi||data||[];
-    if(!list.length){el.innerHTML=`<div class="card">${emptyState('💰','Nessun corrispettivo trovato')}</div>`;return;}
+    if(list.length>0||mese){_apiCache.set(url,data);_renderCorr(data,el);_hideWakingBanner(el);}
+    else if(!cached){_renderCorr(data,el);}
+    else{_showWakingBanner(el);}
+  }catch(e){if(!cached)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;else _showWakingBanner(el);}
+}
+function _renderCorr(data,el){
+  const list=data?.corrispettivi||data||[];
+  if(!list.length){el.innerHTML=`<div class="card">${emptyState('💰','Nessun corrispettivo trovato')}</div>`;return;}
     const disc=list.filter(c=>c.alert_discrepanza).length;
     el.innerHTML=`
       ${disc>0?`<div class="alert alert-warn mb-4">⚠️ ${disc} discrepanze rilevate tra fonti POS</div>`:''}
@@ -1736,7 +1879,6 @@ async function loadCorr(){
           <td>${c.alert_discrepanza?'<span class="badge badge-yellow">⚠️ Discrepanza</span>':'<span class="badge badge-green">✓ OK</span>'}</td>
           <td><button class="btn btn-ghost btn-xs" onclick="modalAggiornaPOS('${c._id}',${c.pos_dichiarato??c.elettronico??0})">✏️ POS</button></td>
         </tr>`).join('')}</tbody></table></div>`;
-  }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
 }
 function modalNuovoCorr(){
   openModal(`<div class="modal">
