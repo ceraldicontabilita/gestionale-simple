@@ -42,8 +42,32 @@ async def lista_fornitori(
         filtro["metodo_pagamento"] = metodo
 
     from pymongo import ASCENDING
-    cursor = col_fornitori().find(filtro).collation({"locale": "it", "strength": 2}).sort("ragione_sociale", ASCENDING).limit(limit)
+    # Ordina: prima chi ha ragione_sociale, poi per nome
+    cursor = col_fornitori().find(filtro).sort([
+        ("ragione_sociale", ASCENDING),
+    ]).limit(limit)
     docs = await cursor.to_list(length=limit)
+
+    # Per fornitori con ragione_sociale vuota, cerca il nome nelle fatture
+    pive_senza_nome = [d.get("partita_iva") for d in docs
+                       if not (d.get("ragione_sociale") or "").strip() and d.get("partita_iva")]
+    if pive_senza_nome:
+        nome_pipe = [
+            {"$match": {"fornitore_piva": {"$in": pive_senza_nome},
+                        "fornitore_nome": {"$nin": [None, ""]}}},
+            {"$group": {"_id": "$fornitore_piva", "nome": {"$first": "$fornitore_nome"}}},
+        ]
+        nomi_rows = await col_invoices().aggregate(nome_pipe).to_list(length=None)
+        nomi_map = {r["_id"]: r["nome"] for r in nomi_rows}
+        # Aggiorna il DB in background e restituisce il valore subito
+        for d in docs:
+            if not (d.get("ragione_sociale") or "").strip():
+                nome = nomi_map.get(d.get("partita_iva", ""), "")
+                if nome:
+                    d["ragione_sociale"] = nome
+                    await col_fornitori().update_one(
+                        {"_id": d["_id"]}, {"$set": {"ragione_sociale": nome}}
+                    )
 
     # Arricchisci con totale fatturato e conteggio anno corrente
     anno = datetime.now().year
@@ -65,6 +89,13 @@ async def lista_fornitori(
         info = agg_map.get(piva, {})
         d["fatture_anno"] = info.get("count", 0)
         d["totale_fatturato"] = info.get("totale", 0.0)
+        # Detraibilità default: 100 se non impostata
+        if d.get("detraibilita_default_pct") is None:
+            d["detraibilita_default_pct"] = 100.0
+
+    # Ordina: fornitori con nome prima, senza nome in fondo
+    docs.sort(key=lambda d: (0 if (d.get("ragione_sociale") or "").strip() else 1,
+                              (d.get("ragione_sociale") or d.get("partita_iva") or "").lower()))
 
     return {"fornitori": [_ser(d) for d in docs], "totale": len(docs)}
 
