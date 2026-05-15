@@ -111,13 +111,17 @@ async def dettaglio_fornitore(request: Request, piva: str):
 
 # ── POST /api/fornitori ───────────────────────────────────────────────────────
 class NuovoFornitore(BaseModel):
-    partita_iva:     str
+    partita_iva:     Optional[str] = None
     ragione_sociale: str
     codice_fiscale:  Optional[str] = None
-    metodo_pagamento: Optional[str] = None   # MP01|MP02|MP08
+    metodo_pagamento: Optional[str] = None
     iban:            Optional[str] = None
     email:           Optional[str] = None
+    pec:             Optional[str] = None
+    telefono:        Optional[str] = None
     indirizzo:       Optional[str] = None
+    cap:             Optional[str] = None
+    citta:           Optional[str] = None
     categoria_iva:   Optional[str] = None
     detraibilita_default_pct: Optional[float] = None
 
@@ -125,19 +129,24 @@ class NuovoFornitore(BaseModel):
 @router.post("")
 async def crea_fornitore(request: Request, body: NuovoFornitore):
     verify_token(request)
-    existing = await col_fornitori().find_one({"partita_iva": body.partita_iva})
-    if existing:
-        raise HTTPException(status_code=409, detail="Fornitore già presente")
+    if body.partita_iva:
+        existing = await col_fornitori().find_one({"partita_iva": body.partita_iva})
+        if existing:
+            raise HTTPException(status_code=409, detail="Fornitore già presente")
 
     doc = {
         "_id":            new_id(),
-        "partita_iva":    body.partita_iva,
+        "partita_iva":    body.partita_iva or "",
         "ragione_sociale": body.ragione_sociale,
         "codice_fiscale": body.codice_fiscale or "",
         "metodo_pagamento": body.metodo_pagamento or "",
         "iban":           body.iban or "",
         "email":          body.email or "",
+        "pec":            body.pec or "",
+        "telefono":       body.telefono or "",
         "indirizzo":      body.indirizzo or "",
+        "cap":            body.cap or "",
+        "citta":          body.citta or "",
         "categoria_iva":  body.categoria_iva or "",
         "detraibilita_default_pct": body.detraibilita_default_pct or 100.0,
         "ateco_code":     "",
@@ -153,7 +162,11 @@ class AggiornaFornitore(BaseModel):
     metodo_pagamento: Optional[str]   = None
     iban:             Optional[str]   = None
     email:            Optional[str]   = None
+    pec:              Optional[str]   = None
+    telefono:         Optional[str]   = None
     indirizzo:        Optional[str]   = None
+    cap:              Optional[str]   = None
+    citta:            Optional[str]   = None
     categoria_iva:    Optional[str]   = None
     detraibilita_default_pct: Optional[float] = None
     ateco_code:       Optional[str]   = None

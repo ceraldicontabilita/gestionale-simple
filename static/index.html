@@ -1055,6 +1055,7 @@ async function loadFornitori(){
     const data=await GET(`/api/fornitori?limit=500${cerca?'&cerca='+encodeURIComponent(cerca):''}`);
     const list=data?.fornitori||data||[];
     if(!list.length){el.innerHTML=`<div class="card">${emptyState('🏢','Nessun fornitore trovato')}</div>`;return;}
+    const anno=new Date().getFullYear();
     el.innerHTML=`<div class="tbl-wrap">
       <div class="tbl-summary"><span>${list.length} fornitori</span></div>
       <table><thead><tr>
@@ -1064,78 +1065,129 @@ async function loadFornitori(){
         <th>IBAN</th>
         <th>Categoria IVA</th>
         <th>Ded. %</th>
-        <th>Fatt. ${new Date().getFullYear()}</th>
-        <th>Totale</th>
+        <th>Fatt. ${anno}</th>
+        <th>Totale ${anno}</th>
         <th></th>
       </tr></thead>
-      <tbody>${list.map(f=>`<tr style="cursor:pointer" onclick="openFornitore('${f.partita_iva||f._id}','${(f.ragione_sociale||'').replace(/'/g,"&apos;")}')">
-        <td style="font-weight:600;max-width:220px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.ragione_sociale||'–'}</div></td>
+      <tbody>${list.map(f=>`<tr style="cursor:pointer" onclick="openFornitore('${f.partita_iva||f._id}')">
+        <td style="font-weight:600;max-width:220px">
+          <div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.ragione_sociale||'–'}</div>
+          ${f.email?`<div style="font-size:11px;color:var(--text3)">${f.email}</div>`:''}
+        </td>
         <td class="font-mono" style="font-size:12px">${f.partita_iva||'–'}</td>
-        <td style="font-size:12px">${metodoLabel(f.metodo_pagamento)||'–'}</td>
-        <td class="font-mono" style="font-size:11px;color:var(--text3)">${f.iban?f.iban.substring(0,18)+'…':'–'}</td>
+        <td style="font-size:12px">${f.metodo_pagamento?`<span style="background:var(--indigo-light);color:var(--indigo);padding:2px 7px;border-radius:5px;font-size:11px;font-weight:600">${metodoLabel(f.metodo_pagamento)}</span>`:'<span style="color:var(--red);font-size:11px;font-weight:600">⚠ mancante</span>'}</td>
+        <td class="font-mono" style="font-size:11px;color:var(--text3)">${f.iban?f.iban.substring(0,22)+'…':'–'}</td>
         <td>${f.categoria_iva?badge(f.categoria_iva):'–'}</td>
         <td style="font-weight:700;color:${f.detraibilita_default_pct>0&&f.detraibilita_default_pct<100?'var(--orange)':'var(--text)'}">${f.detraibilita_default_pct!=null?f.detraibilita_default_pct+'%':'–'}</td>
-        <td style="text-align:center">${f.fatture_anno||0}</td>
-        <td style="font-weight:700">${f.totale_fatturato?euro(f.totale_fatturato):'–'}</td>
-        <td style="text-align:right" onclick="event.stopPropagation()">
-          <button class="btn btn-ghost btn-xs" onclick="runAiClassifica('${f.partita_iva||f._id}')">🤖 AI</button>
+        <td style="text-align:center;font-weight:600">${f.fatture_anno||0}</td>
+        <td style="font-weight:700;color:var(--indigo)">${f.totale_fatturato?euro(f.totale_fatturato):'–'}</td>
+        <td style="text-align:right;white-space:nowrap" onclick="event.stopPropagation()">
+          <button class="btn btn-ghost btn-xs" onclick="runAiClassifica('${f.partita_iva||f._id}')">🤖</button>
         </td>
       </tr>`).join('')}</tbody></table></div>`;
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
 }
-async function openFornitore(piva, nome){
+
+async function openFornitore(piva){
   if(!piva||piva==='undefined')return;
   try{
     const d=await GET(`/api/fornitori/${piva}`);
     const f=d.fornitore||{};
     const fatture=d.ultime_fatture||[];
-    openModal(`<div class="modal" style="max-width:640px">
+    const dapagareCnt=fatture.filter(ft=>ft.stato==='da_pagare'||ft.stato==='scaduta').length;
+    const totFatture=fatture.reduce((s,ft)=>s+(ft.importo_totale||0),0);
+
+    const kv=(label,val)=>val?`<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="width:140px;font-size:12px;color:var(--text3);flex-shrink:0">${label}</div>
+      <div style="font-size:13px;font-weight:500;word-break:break-all">${val}</div></div>`:'';
+
+    openModal(`<div class="modal" style="max-width:700px">
       <div class="modal-head">
-        <div><div class="modal-title">${f.ragione_sociale||nome}</div><div class="modal-sub">P.IVA ${f.partita_iva||'–'}</div></div>
+        <div>
+          <div class="modal-title">${f.ragione_sociale||'Fornitore'}</div>
+          <div class="modal-sub">P.IVA ${f.partita_iva||'–'} · C.F. ${f.codice_fiscale||'–'}</div>
+        </div>
         <button class="modal-close" onclick="closeModal()">×</button>
       </div>
-      <div class="modal-body">
-        <div class="field-row" style="margin-bottom:16px">
-          <div class="field"><label>Metodo pagamento</label>
-            <select id="ef-met" class="inp">
-              <option value="">– non specificato –</option>
-              <option value="MP01" ${f.metodo_pagamento==='MP01'?'selected':''}>Contanti (MP01)</option>
-              <option value="MP02" ${f.metodo_pagamento==='MP02'?'selected':''}>Assegno (MP02)</option>
-              <option value="MP05" ${f.metodo_pagamento==='MP05'?'selected':''}>Bonifico (MP05)</option>
-              <option value="MP08" ${f.metodo_pagamento==='MP08'?'selected':''}>Carta (MP08)</option>
-            </select>
-          </div>
-          <div class="field"><label>Categoria IVA</label>
-            <select id="ef-cat" class="inp">
-              <option value="">–</option>
-              ${['noleggio','riparazione','carburante','assicurazione','telefonia','energia','alimentari','consulenza','generico'].map(c=>`<option ${f.categoria_iva===c?'selected':''}>${c}</option>`).join('')}
-            </select>
-          </div>
-          <div class="field"><label>Detraibilità IVA %</label>
-            <input id="ef-ded" class="inp" type="number" min="0" max="100" value="${f.detraibilita_default_pct??100}">
-          </div>
-          <div class="field span2"><label>IBAN</label>
-            <input id="ef-iban" class="inp" value="${f.iban||''}" placeholder="IT60...">
+      <div class="modal-body" style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+        <!-- colonna sx: dati anagrafici -->
+        <div>
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-bottom:8px">Anagrafica</div>
+          ${kv('Email',f.email)}
+          ${kv('PEC',f.pec)}
+          ${kv('Telefono',f.telefono)}
+          ${kv('Indirizzo',f.indirizzo)}
+          ${kv('CAP / Città',[f.cap,f.citta].filter(Boolean).join(' '))}
+          ${kv('IBAN',f.iban)}
+          <div style="margin-top:16px;font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-bottom:8px">Impostazioni contabili</div>
+          <div class="field-row" style="gap:10px">
+            <div class="field">
+              <label>Metodo pagamento</label>
+              <select id="ef-met" class="inp">
+                <option value="">– non specificato –</option>
+                <option value="MP01" ${f.metodo_pagamento==='MP01'?'selected':''}>Contanti</option>
+                <option value="MP02" ${f.metodo_pagamento==='MP02'?'selected':''}>Assegno</option>
+                <option value="MP05" ${f.metodo_pagamento==='MP05'?'selected':''}>Bonifico</option>
+                <option value="MP08" ${f.metodo_pagamento==='MP08'?'selected':''}>Carta</option>
+                <option value="MP12" ${f.metodo_pagamento==='MP12'?'selected':''}>RID/SDD</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Categoria IVA</label>
+              <select id="ef-cat" class="inp">
+                <option value="">–</option>
+                ${['noleggio','riparazione','carburante','assicurazione','telefonia','energia','alimentari','consulenza','generico'].map(c=>`<option ${f.categoria_iva===c?'selected':''}>${c}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label>Detraibilità IVA %</label>
+              <input id="ef-ded" class="inp" type="number" min="0" max="100" value="${f.detraibilita_default_pct??100}">
+            </div>
+            <div class="field span2">
+              <label>IBAN (modifica)</label>
+              <input id="ef-iban" class="inp" value="${f.iban||''}" placeholder="IT60...">
+            </div>
           </div>
         </div>
-        ${fatture.length?`<div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:8px">ULTIME FATTURE</div>
-        <table style="font-size:12px"><thead><tr><th>N°</th><th>Data</th><th>Totale</th><th>Stato</th></tr></thead>
-        <tbody>${fatture.map(ft=>`<tr>
-          <td class="font-mono">${ft.numero_fattura||'–'}</td>
-          <td>${fmtDate(ft.data_fattura)}</td>
-          <td style="font-weight:700">${euro(ft.importo_totale)}</td>
-          <td>${badge(ft.stato||'da_pagare')}</td>
-        </tr>`).join('')}</tbody></table>`:''}
+
+        <!-- colonna dx: fatture -->
+        <div>
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-bottom:8px">
+            Ultime fatture
+            ${dapagareCnt?`<span style="background:var(--red-bg);color:var(--red);padding:1px 7px;border-radius:99px;font-weight:700">${dapagareCnt} da pagare</span>`:'<span style="color:var(--green);font-weight:600">✓ tutte pagate</span>'}
+          </div>
+          ${totFatture?`<div style="font-size:13px;color:var(--text2);margin-bottom:10px">Totale: <strong>${euro(totFatture)}</strong></div>`:''}
+          ${fatture.length?`<div style="max-height:320px;overflow-y:auto">
+            <table style="font-size:12px;width:100%">
+              <thead><tr style="position:sticky;top:0;background:var(--surface)">
+                <th>N°</th><th>Data</th><th style="text-align:right">Totale</th><th>Stato</th>
+              </tr></thead>
+              <tbody>${fatture.map(ft=>`<tr>
+                <td class="font-mono" style="font-size:11px">${ft.numero_fattura||'–'}</td>
+                <td style="white-space:nowrap">${fmtDate(ft.data_fattura)}</td>
+                <td style="text-align:right;font-weight:700">${euro(ft.importo_totale)}</td>
+                <td>${badge(ft.stato||'da_pagare')}</td>
+              </tr>`).join('')}</tbody>
+            </table></div>`:
+            `<div style="color:var(--text3);font-size:12px;padding:20px 0">Nessuna fattura trovata</div>`}
+        </div>
       </div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost btn-sm" onclick="fetchIbanDaFatture('${piva}')">📥 IBAN da fatture</button>
-        <button class="btn btn-ghost btn-sm" onclick="fetchDatiDaFatture('${piva}')">🔄 Dati da XML</button>
-        <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
-        <button class="btn btn-primary" onclick="saveEditFornitore('${piva}')">Salva</button>
+      <div class="modal-foot" style="justify-content:space-between">
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="fetchIbanDaFatture('${piva}')">📥 IBAN da fatture</button>
+          <button class="btn btn-ghost btn-sm" onclick="fetchDatiDaFatture('${piva}')">🔄 Dati da XML</button>
+          <button class="btn btn-ghost btn-sm" onclick="runAiClassifica('${piva}')">🤖 AI</button>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
+          <button class="btn btn-primary" onclick="saveEditFornitore('${piva}')">Salva</button>
+        </div>
       </div>
     </div>`);
   }catch(e){err(e.message);}
 }
+
 async function fetchIbanDaFatture(piva){
   try{const r=await GET(`/api/fornitori/${piva}/iban-from-fatture`);if(r.iban){$('ef-iban').value=r.iban;ok('IBAN importato: '+r.iban);}else warn('Nessun IBAN trovato nelle fatture');}
   catch(e){err(e.message);}
@@ -1156,24 +1208,58 @@ async function saveEditFornitore(piva){
   }catch(e){err(e.message);}
 }
 function modalNuovoFornitore(){
-  openModal(`<div class="modal">
+  openModal(`<div class="modal" style="max-width:560px">
     <div class="modal-head"><div class="modal-title">Nuovo Fornitore</div><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="modal-body">
       <div class="field-row">
-        <div class="field span2"><label>Denominazione</label><input id="nf-nome" class="inp" placeholder="Ragione sociale"></div>
-        <div class="field"><label>P.IVA</label><input id="nf-piva" class="inp"></div>
+        <div class="field span2"><label>Ragione Sociale *</label><input id="nf-nome" class="inp" placeholder="Ragione sociale o nome"></div>
+        <div class="field"><label>P.IVA</label><input id="nf-piva" class="inp" maxlength="11"></div>
         <div class="field"><label>Cod. Fiscale</label><input id="nf-cf" class="inp"></div>
-        <div class="field"><label>Categoria</label><select id="nf-cat" class="inp"><option value="">–</option><option>noleggio</option><option>telefonia</option><option>energia</option><option>manutenzione</option><option>consulenza</option><option>altro</option></select></div>
-        <div class="field"><label>Ded. IVA %</label><input id="nf-ded" type="number" class="inp" placeholder="100"></div>
+        <div class="field"><label>Email</label><input id="nf-email" class="inp" type="email"></div>
+        <div class="field"><label>PEC</label><input id="nf-pec" class="inp" type="email"></div>
+        <div class="field"><label>Metodo pag.</label>
+          <select id="nf-met" class="inp">
+            <option value="">– seleziona –</option>
+            <option value="MP05">Bonifico</option>
+            <option value="MP01">Contanti</option>
+            <option value="MP02">Assegno</option>
+            <option value="MP12">RID/SDD</option>
+            <option value="MP08">Carta</option>
+          </select>
+        </div>
+        <div class="field"><label>Categoria IVA</label>
+          <select id="nf-cat" class="inp">
+            <option value="">–</option>
+            <option>noleggio</option><option>telefonia</option><option>energia</option>
+            <option>carburante</option><option>assicurazione</option><option>consulenza</option><option>generico</option>
+          </select>
+        </div>
+        <div class="field"><label>Ded. IVA %</label><input id="nf-ded" type="number" class="inp" placeholder="100" min="0" max="100"></div>
         <div class="field span2"><label>IBAN</label><input id="nf-iban" class="inp" placeholder="IT60..."></div>
       </div>
     </div>
-    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Annulla</button><button class="btn btn-primary" onclick="saveFornitore()">Salva</button></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Annulla</button>
+      <button class="btn btn-primary" onclick="saveFornitore()">Salva</button>
+    </div>
   </div>`);
 }
 async function saveFornitore(){
-  try{await POST('/api/fornitori',{ragione_sociale:$('nf-nome').value,partita_iva:$('nf-piva').value,codice_fiscale:$('nf-cf').value,categoria_iva:$('nf-cat').value,detraibilita_default_pct:$('nf-ded').value?+$('nf-ded').value:null,iban:$('nf-iban').value});ok('Fornitore salvato');closeModal();loadFornitori();}
-  catch(e){err(e.message);}
+  if(!$('nf-nome').value.trim()){err('Ragione sociale obbligatoria');return;}
+  try{
+    await POST('/api/fornitori',{
+      ragione_sociale:$('nf-nome').value.trim(),
+      partita_iva:$('nf-piva').value.trim(),
+      codice_fiscale:$('nf-cf').value.trim(),
+      email:$('nf-email').value.trim()||null,
+      pec:$('nf-pec').value.trim()||null,
+      metodo_pagamento:$('nf-met').value||null,
+      categoria_iva:$('nf-cat').value||null,
+      detraibilita_default_pct:$('nf-ded').value?+$('nf-ded').value:null,
+      iban:$('nf-iban').value.trim()||null,
+    });
+    ok('Fornitore salvato');closeModal();loadFornitori();
+  }catch(e){err(e.message);}
 }
 async function runAiClassifica(piva){warn('Classificazione AI...');try{await POST(`/api/fornitori/${piva}/classifica-iva`);ok('Classificazione AI completata');loadFornitori();}catch(e){err(e.message);}}
 
