@@ -29,6 +29,14 @@ async def pec_sync(request: Request, body: SyncRequest = SyncRequest()):
     return result
 
 
+@router.post("/repair-fornitori")
+async def repair_fornitori(request: Request):
+    """Riscarica 60 giorni di PEC per ripristinare fornitore_nome mancante sulle fatture importate senza quel campo."""
+    verify_token(request)
+    result = await sync_pec(giorni_indietro=60, forza_riprocessa=True)
+    return result
+
+
 @router.post("/processa/{pec_id}")
 async def processa_pec(request: Request, pec_id: str):
     """Riprocessa una singola email PEC già in inbox."""

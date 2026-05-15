@@ -132,6 +132,33 @@ async def _migra_nomi_da_xml():
         print(f"⚠️  Migration nomi da XML: {e}")
 
 
+async def _repair_fornitori_from_pec():
+    """
+    Se ci sono fatture reali (con numero_fattura) senza fornitore_nome e senza raw_xml,
+    ri-scarica 60 giorni di PEC per recuperare il nome dal file originale.
+    """
+    try:
+        from app.database import get_db
+        db = get_db()
+        count = await db["invoices"].count_documents({
+            "$and": [
+                {"numero_fattura": {"$nin": [None, ""]}},
+                {"$or": [{"fornitore_nome": {"$in": [None, ""]}},
+                         {"fornitore_nome": {"$exists": False}}]},
+                {"$or": [{"raw_xml": {"$in": [None, ""]}},
+                         {"raw_xml": {"$exists": False}}]},
+            ]
+        })
+        if count == 0:
+            return
+        print(f"⚠️  Trovate {count} fatture senza fornitore_nome — avvio repair da PEC (60 giorni)…")
+        from app.services.pec_service import sync_pec
+        result = await sync_pec(giorni_indietro=60, forza_riprocessa=True)
+        print(f"✅ PEC repair: nuove={result.get('nuove',0)} duplicate_risanate={result.get('duplicate',0)} errori={result.get('errori',0)}")
+    except Exception as e:
+        print(f"⚠️  PEC repair fornitori: {e}")
+
+
 async def _migra_corrispettivi():
     """Imposta contanti=0 e elettronico=0 sui corrispettivi che non hanno questi campi."""
     try:
@@ -158,6 +185,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_migra_nomi_fornitori())
         asyncio.create_task(_migra_corrispettivi())
         asyncio.create_task(_migra_nomi_da_xml())
+        asyncio.create_task(_repair_fornitori_from_pec())
     except Exception as e:
         print(f"⚠️  MongoDB non raggiungibile: {e}")
     yield

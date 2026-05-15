@@ -172,6 +172,19 @@ async def _processa_allegato(filename: str, data: bytes, msg_id: str) -> dict:
     # Dedup: stesso hash = stessa fattura
     existing = await col_invoices().find_one({"xml_hash": xml_hash})
     if existing:
+        # Se l'invoice esistente manca del fornitore, ripristina dai dati appena parsati
+        nome_nuovo = (fattura.get("fornitore_nome") or "").strip()
+        nome_db    = (existing.get("fornitore_nome") or "").strip()
+        if nome_nuovo and not nome_db:
+            heal: dict = {
+                "fornitore_nome": nome_nuovo,
+                "fornitore_piva": fattura.get("fornitore_piva", ""),
+                "fornitore_cf":   fattura.get("fornitore_cf", ""),
+            }
+            if fattura.get("raw_xml"):
+                heal["raw_xml"] = fattura["raw_xml"]
+            await col_invoices().update_one({"xml_hash": xml_hash}, {"$set": heal})
+            await _upsert_fornitore(fattura)
         return {
             "esito": "duplicata",
             "fattura_id": str(existing["_id"]),
