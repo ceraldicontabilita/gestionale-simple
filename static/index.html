@@ -602,6 +602,15 @@ select.inp { cursor: pointer; }
         <span class="topbar-sub" id="tb-sub"></span>
       </div>
       <div id="tb-actions" class="flex gap-2"></div>
+      <div style="display:flex;align-items:center;gap:6px;margin-right:12px;border-right:1px solid var(--border);padding-right:12px">
+        <span style="font-size:11px;color:var(--text3);font-weight:600">Anno</span>
+        <select id="global-anno" class="inp" style="padding:4px 8px;font-size:13px;font-weight:700;min-width:72px;border-radius:6px;cursor:pointer" onchange="changeAnno(this.value)">
+          <option value="2023">2023</option>
+          <option value="2024">2024</option>
+          <option value="2025">2025</option>
+          <option value="2026" selected>2026</option>
+        </select>
+      </div>
       <div class="topbar-user" onclick="doLogout()">
         <div class="topbar-avatar">CG</div>
         <span style="font-size:13px;font-weight:600;color:var(--text2)">Admin</span>
@@ -623,6 +632,22 @@ const $ = id => document.getElementById(id);
 const qs = (sel,el=document) => el.querySelector(sel);
 const qsa = (sel,el=document) => [...el.querySelectorAll(sel)];
 const html = (s,...v) => s.reduce((a,b,i)=>a+(v[i-1]??'')+b);
+
+/* ─── Anno globale ──────────────────────────────────── */
+let APP_ANNO = new Date().getFullYear();
+function changeAnno(v){
+  APP_ANNO = parseInt(v);
+  _apiCache.clear(); // svuota cache quando cambia anno
+  // ricarica la pagina corrente
+  const active = document.querySelector('.sb-item.active');
+  const page = active?.dataset?.p || 'dashboard';
+  if(typeof PAGES[page]==='function') PAGES[page]();
+}
+// Sincronizza il selettore con il valore corrente
+function _syncAnnoSelect(){
+  const sel = document.getElementById('global-anno');
+  if(sel) sel.value = String(APP_ANNO);
+}
 
 function euro(n){ if(n==null||isNaN(+n))return'–'; return new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(+n); }
 function num(n){ if(n==null||isNaN(+n))return'–'; return new Intl.NumberFormat('it-IT',{maximumFractionDigits:2}).format(+n); }
@@ -1569,7 +1594,7 @@ PAGES['fornitori']=async function(){
 function _renderForniLista(data, el){
   const list=data?.fornitori||data||[];
     if(!list.length){el.innerHTML=`<div class="card">${emptyState('🏢','Nessun fornitore trovato')}</div>`;return;}
-    const anno=new Date().getFullYear();
+    const anno=APP_ANNO;
     const senzaNome=list.filter(f=>!(f.ragione_sociale||'').trim()).length;
     el.innerHTML=`<div class="tbl-wrap">
       <div class="tbl-summary">
@@ -1612,7 +1637,7 @@ function _renderForniLista(data, el){
 async function loadFornitori(){
   const cerca=$('fo-cerca')?.value||'';
   const el=$('fo-body'); if(!el)return;
-  const url=`/api/fornitori?limit=500${cerca?'&cerca='+encodeURIComponent(cerca):''}`;
+  const url=`/api/fornitori?limit=500&anno=${APP_ANNO}${cerca?'&cerca='+encodeURIComponent(cerca):''}`;
   const isFiltered=!!cerca;
   const cached=_apiCache.get(url);
   if(cached) _renderForniLista(cached,el);
@@ -2014,37 +2039,50 @@ async function syncDaEstrattoAssegni(){
    PAGE: PRIMA NOTA
 ═══════════════════════════════════════════════════════ */
 PAGES['prima-nota']=async function(){
+  const meseOpts=['','01','02','03','04','05','06','07','08','09','10','11','12']
+    .map((m,i)=>{ const lbl=i===0?'Tutti i mesi':new Date(2000,i-1,1).toLocaleString('it-IT',{month:'long'}); return `<option value="${m}">${lbl}</option>`; }).join('');
   $('content').innerHTML=`
-    <div class="tabs" id="pn-tabs">
-      <div class="tab active" data-t="cassa" onclick="switchPN('cassa',this)">💵 Cassa</div>
-      <div class="tab" data-t="banca" onclick="switchPN('banca',this)">🏦 Banca</div>
-      <div class="tab" data-t="provvisori" onclick="switchPN('provvisori',this)">⏳ Provvisori</div>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:16px">
+      <div class="tabs" id="pn-tabs" style="margin-bottom:0">
+        <div class="tab active" data-t="cassa" onclick="switchPN('cassa',this)">💵 Cassa</div>
+        <div class="tab" data-t="banca" onclick="switchPN('banca',this)">🏦 Banca</div>
+        <div class="tab" data-t="provvisori" onclick="switchPN('provvisori',this)">⏳ Provvisori</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-left:auto;flex-wrap:wrap">
+        <select id="pn-mese" class="inp" style="min-width:140px;font-size:13px" onchange="switchPN(_pnTipo())">
+          ${meseOpts}
+        </select>
+        <input id="pn-search" class="inp" style="min-width:220px;font-size:13px" placeholder="🔍 Cerca descrizione..." oninput="debounce(()=>switchPN(_pnTipo()),350)()">
+        <button class="btn btn-ghost btn-sm" onclick="switchPN(_pnTipo())">🔄</button>
+      </div>
     </div>
     <div id="pn-body">${loading()}</div>`;
   switchPN('cassa');
 };
+function _pnTipo(){ return document.querySelector('#pn-tabs .tab.active')?.dataset?.t||'cassa'; }
 async function switchPN(tipo,btn){
   if(btn){qsa('#pn-tabs .tab').forEach(t=>t.classList.toggle('active',t.dataset.t===tipo));}
   const el=$('pn-body'); if(!el)return;
   if(tipo==='provvisori'){
     el.innerHTML=loading();
+    const search=($('pn-search')?.value||'').toLowerCase();
     try{
       const [dataProv, dataFatt] = await Promise.all([
-        GET('/api/prima-nota/provvisori?limit=200'),
+        GET(`/api/prima-nota/provvisori?limit=2000&anno=${APP_ANNO}`),
         GET('/api/fatture?stato=da_classificare&limit=100'),
       ]);
-      const list = dataProv?.provvisori||[];
+      let list = dataProv?.provvisori||[];
+      if(search) list=list.filter(m=>(m.descrizione||'').toLowerCase().includes(search));
       const fatDaClass = dataFatt?.fatture||[];
       $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="riconciliaTutti()">🔄 Riconcilia tutti</button>`;
-      // Section 1: movimenti provvisori (F24, paghe, etc.)
       const rowsProv = list.length===0
         ? `<tr><td colspan="7">${emptyState('✅','Nessun movimento provvisorio','Tutto riconciliato!')}</td></tr>`
         : list.map(m=>`<tr>
-          <td>${fmtDate(m.data)}</td>
+          <td style="white-space:nowrap">${fmtDate(m.data)}</td>
           <td style="font-size:12px;color:var(--text2)">${m.descrizione?.match(/Fatt\.\s+(.+?)(?:\s+-\s|$)/)?.[1]?.trim()||'–'}</td>
           <td style="max-width:200px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
           <td>${m.tipo==='entrata'?'<span class="badge badge-green">↑ Entrata</span>':'<span class="badge badge-red">↓ Uscita</span>'}</td>
-          <td style="font-weight:700;color:${m.tipo==='entrata'?'var(--green)':'var(--red)'}">${euro(m.importo)}</td>
+          <td style="font-weight:700;color:${m.tipo==='entrata'?'var(--green)':'var(--red)'};">${euro(m.importo)}</td>
           <td>${badge(m.fonte||'provvisorio')}</td>
           <td style="text-align:right;white-space:nowrap">
             <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','provvisori','cassa')">→ cassa</button>
@@ -2052,19 +2090,18 @@ async function switchPN(tipo,btn){
             <button class="btn btn-ghost btn-xs" onclick="modalConfermaProvvisorio('${m._id}')">✓ Conf.</button>
           </td>
         </tr>`).join('');
-      // Section 2: fatture da classificare (metodo mancante o fornitore nuovo)
       const rowsFatt = fatDaClass.length===0
         ? `<tr><td colspan="6" style="color:var(--text3);padding:8px">Nessuna fattura da classificare</td></tr>`
         : fatDaClass.map(f=>`<tr>
-          <td>${fmtDate(f.data_fattura)}</td>
+          <td style="white-space:nowrap">${fmtDate(f.data_fattura)}</td>
           <td style="font-size:12px">${f.numero_fattura||'–'}</td>
           <td style="max-width:180px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.fornitore_nome||f.fornitore_piva||'–'}</div></td>
-          <td style="font-weight:700">${euro(f.importo_totale)}</td>
+          <td style="font-weight:700;">${euro(f.importo_totale)}</td>
           <td>${f.alert_fornitore_nuovo?'<span class="badge badge-orange" title="Fornitore nuovo">Nuovo forn.</span>':''}${f.alert_metodo_mancante?'<span class="badge badge-red" title="Metodo pagamento mancante">Metodo?</span>':''}</td>
           <td><button class="btn btn-ghost btn-xs" onclick="modalDettaglioFattura('${f._id}')">Dettaglio</button></td>
         </tr>`).join('');
       el.innerHTML=`<div class="tbl-wrap">
-        <div class="tbl-summary"><span>${list.length} movimenti provvisori</span></div>
+        <div class="tbl-summary"><span>${list.length} movimenti provvisori${search?' (filtrati)':''}</span></div>
         <table><thead><tr><th>Data</th><th>N° Fatt.</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Fonte</th><th></th></tr></thead>
         <tbody>${rowsProv}</tbody></table>
         <div style="margin-top:24px">
@@ -2075,36 +2112,56 @@ async function switchPN(tipo,btn){
       </div>`;
     }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
   } else {
-    const url=`/api/prima-nota/${tipo}?limit=200`;
+    const mese=$('pn-mese')?.value||'';
+    const search=($('pn-search')?.value||'').toLowerCase();
+    const url=`/api/prima-nota/${tipo}?limit=2000&anno=${APP_ANNO}${mese?'&mese='+mese:''}`;
     const altra=tipo==='cassa'?'banca':'cassa';
     $('tb-actions').innerHTML=`<button class="btn btn-primary btn-sm" onclick="modalNuovoMov('${tipo}')">+ Movimento</button>`;
     function _renderPN(data){
-      const list=data?.movimenti||data||[];
+      let list=data?.movimenti||data||[];
+      if(search) list=list.filter(m=>(m.descrizione||'').toLowerCase().includes(search));
       const saldo=list.reduce((s,m)=>s+(m.tipo==='entrata'?+m.importo:-+m.importo),0);
+      const entrate=list.filter(m=>m.tipo==='entrata').reduce((s,m)=>s+(+m.importo||0),0);
+      const uscite=list.filter(m=>m.tipo==='uscita').reduce((s,m)=>s+(+m.importo||0),0);
       let _acc=0;
       const _saldi=[...list].reverse().map(m=>{_acc+=(m.tipo==='entrata'?+m.importo:-+m.importo);return _acc;}).reverse();
-      el.innerHTML=`<div class="tbl-wrap">
-        <div class="tbl-summary"><span>${list.length} movimenti</span><span>Saldo: <strong style="color:${saldo>=0?'var(--green)':'var(--red)'}">${euro(saldo)}</strong></span></div>
-        <table><thead><tr><th>Data</th><th>N° Fatt.</th><th>Descrizione</th><th>Tipo</th><th>Importo</th><th>Saldo</th><th></th></tr></thead>
-        <tbody>${list.map((m,i)=>{const nf=m.descrizione?.match(/Fatt\.\s+(.+?)(?:\s+-\s|$)/)?.[1]?.trim()||'–';const s=_saldi[i];return`<tr>
-          <td>${fmtDate(m.data)}</td>
-          <td style="font-size:12px;color:var(--text2)">${nf}</td>
-          <td style="max-width:240px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
-          <td>${m.tipo==='entrata'?'<span class="badge badge-green">↑ Entrata</span>':'<span class="badge badge-red">↓ Uscita</span>'}</td>
-          <td style="font-weight:700;color:${m.tipo==='entrata'?'var(--green)':'var(--red)'}">${euro(m.importo)}</td>
-          <td style="font-weight:600;color:${s>=0?'var(--green)':'var(--red)'}">${euro(s)}</td>
-          <td style="text-align:right;white-space:nowrap">
-            <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','${altra}')" title="Sposta in ${altra}">→ ${altra}</button>
-            <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','provvisori')" title="Sposta in provvisori">→ prov.</button>
-          </td>
-        </tr>`;}).join('')}</tbody></table></div>`;
+      el.innerHTML=`
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+          <div class="card" style="padding:14px 16px">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">↑ Entrate</div>
+            <div style="font-size:18px;font-weight:800;color:var(--green)">${euro(entrate)}</div>
+          </div>
+          <div class="card" style="padding:14px 16px">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">↓ Uscite</div>
+            <div style="font-size:18px;font-weight:800;color:var(--red)">${euro(uscite)}</div>
+          </div>
+          <div class="card" style="padding:14px 16px;border:1px solid ${saldo>=0?'var(--green)':'var(--red)'}22">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Saldo netto</div>
+            <div style="font-size:18px;font-weight:800;color:${saldo>=0?'var(--green)':'var(--red)'}">${euro(saldo)}</div>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <div class="tbl-summary"><span>${list.length} movimenti${search?' (filtrati)':''}</span></div>
+          <table><thead><tr><th>Data</th><th>N° Fatt.</th><th>Descrizione</th><th>Tipo</th><th style="text-align:right">Importo</th><th style="text-align:right">Saldo prog.</th><th></th></tr></thead>
+          <tbody>${list.map((m,i)=>{const nf=m.descrizione?.match(/Fatt\.\s+(.+?)(?:\s+-\s|$)/)?.[1]?.trim()||'–';const s=_saldi[i];return`<tr>
+            <td style="white-space:nowrap">${fmtDate(m.data)}</td>
+            <td style="font-size:12px;color:var(--text2)">${nf}</td>
+            <td style="max-width:260px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${m.descrizione||'–'}</div></td>
+            <td>${m.tipo==='entrata'?'<span class="badge badge-green">↑ Entrata</span>':'<span class="badge badge-red">↓ Uscita</span>'}</td>
+            <td style="text-align:right;font-weight:700;color:${m.tipo==='entrata'?'var(--green)':'var(--red)'};">${euro(m.importo)}</td>
+            <td style="text-align:right;font-weight:600;color:${s>=0?'var(--green)':'var(--red)'};">${euro(s)}</td>
+            <td style="text-align:right;white-space:nowrap">
+              <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','${altra}')" title="Sposta in ${altra}">→ ${altra}</button>
+              <button class="btn btn-ghost btn-xs" onclick="spostaMovimento('${m._id}','${tipo}','provvisori')" title="Sposta in provvisori">→ prov.</button>
+            </td>
+          </tr>`;}).join('')}</tbody></table></div>`;
     }
     const cached=_apiCache.get(url);
     if(cached) _renderPN(cached); else el.innerHTML=loading();
     try{
       const data=await api('GET',url);
       const list=data?.movimenti||data||[];
-      if(list.length>0){_apiCache.set(url,data);_renderPN(data);_hideWakingBanner(el);}
+      if(list.length>0||mese||search){_apiCache.set(url,data);_renderPN(data);_hideWakingBanner(el);}
       else if(!cached){_renderPN(data);}
       else{_showWakingBanner(el);}
     }catch(e){if(!cached)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;else _showWakingBanner(el);}
@@ -2771,16 +2828,17 @@ async function loadVeicoli(){
     el.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
       ${list.map(v=>{
         const alerts=v.alert_scadenze||[];
-        return `<div class="card" style="${alerts.length?'border-left:3px solid var(--orange)':''}">
+        const tipoLabel={'noleggio_lungo_termine':'NLT','noleggio_llt':'NLT','leasing':'Leasing','proprieta':'Proprietà'}[v.tipo_contratto]||v.tipo_contratto||'–';
+        return `<div class="card" style="cursor:pointer;transition:box-shadow .15s,transform .15s;${alerts.length?'border-left:3px solid var(--orange)':''}" onclick="modalDettaglioVeicolo('${v.targa}')" onmouseover="this.style.boxShadow='0 4px 16px rgba(0,0,0,.12)';this.style.transform='translateY(-1px)'" onmouseout="this.style.boxShadow='';this.style.transform=''">
           <div class="card-body">
             <div class="flex items-start justify-between mb-3">
               <div>
                 <div style="font-size:16px;font-weight:800;color:var(--text)">🚗 ${v.targa||'–'}</div>
-                <div style="font-size:12px;color:var(--text3);margin-top:2px">${v.marca||''} ${v.modello||''}</div>
+                <div style="font-size:12px;color:var(--text3);margin-top:2px">${v.marca||''} ${v.modello||''} <span style="background:var(--surface2);padding:1px 5px;border-radius:4px;font-size:10px">${tipoLabel}</span></div>
               </div>
               <div style="text-align:right">
                 <div style="font-size:11px;color:var(--text3)">Canone</div>
-                <div style="font-size:15px;font-weight:800;color:var(--indigo)">${euro(v.canone_mensile)}<span style="font-size:11px;font-weight:400">/mese</span></div>
+                <div style="font-size:15px;font-weight:800;color:var(--gold)">${euro(v.canone_mensile)}<span style="font-size:11px;font-weight:400">/mese</span></div>
               </div>
             </div>
             ${alerts.length?`<div class="mb-3">${alerts.map(a=>`<div class="alert alert-warn" style="padding:8px 12px;font-size:11px;margin-bottom:4px">⚠️ ${a.tipo}: ${fmtDate(a.scadenza)} (${a.giorni}gg)</div>`).join('')}</div>`:''}
@@ -2788,8 +2846,9 @@ async function loadVeicoli(){
               <div>Bollo: <span style="font-weight:600;color:var(--text2)">${fmtDate(v.scadenza_bollo)}</span></div>
               <div>Revisione: <span style="font-weight:600;color:var(--text2)">${fmtDate(v.scadenza_revisione)}</span></div>
               <div>Assicurazione: <span style="font-weight:600;color:var(--text2)">${fmtDate(v.scadenza_assicurazione)}</span></div>
-              <div>Fine NLT: <span style="font-weight:600;color:var(--text2)">${fmtDate(v.fine_contratto_noleggio)}</span></div>
+              <div>Fine ${tipoLabel}: <span style="font-weight:600;color:var(--text2)">${fmtDate(v.fine_contratto_noleggio)}</span></div>
             </div>
+            <div style="margin-top:10px;font-size:11px;color:var(--text3)">Clicca per i dettagli →</div>
           </div>
         </div>`;
       }).join('')}
@@ -2821,157 +2880,78 @@ async function saveVeicolo(){
   try{await POST('/api/veicoli',{targa:$('nv-targa').value.toUpperCase(),marca:$('nv-marca').value,modello:$('nv-mod').value,tipo_contratto:$('nv-tipo').value,canone_mensile:+$('nv-can').value||0,fornitore_noleggio:$('nv-forn').value,scadenza_bollo:$('nv-bollo').value||null,scadenza_revisione:$('nv-rev').value||null,scadenza_assicurazione:$('nv-assic').value||null,fine_contratto_noleggio:$('nv-fine').value||null,detraibilita_iva_pct:+$('nv-ded').value||40});ok('Veicolo salvato');closeModal();loadVeicoli();}
   catch(e){err(e.message);}
 }
+async function modalDettaglioVeicolo(targa){
+  if(!targa||targa==='undefined')return;
+  try{
+    const d=await GET(`/api/veicoli/${encodeURIComponent(targa)}`);
+    const v=d.veicolo||{};
+    const fatture=d.fatture||[];
+    const verbali=d.verbali||[];
+    const tipoLabel={'noleggio_lungo_termine':'Noleggio Lungo Termine','noleggio_llt':'Noleggio Lungo Termine','leasing':'Leasing','proprieta':'Proprietà'}[v.tipo_contratto]||v.tipo_contratto||'–';
+    const kv=(label,val,mono=false)=>val?`<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
+      <div style="width:150px;font-size:11px;color:var(--text3);flex-shrink:0">${label}</div>
+      <div style="font-size:13px;font-weight:500${mono?';font-family:var(--font-mono)':''}">${val}</div></div>`:'';
+    const alerts=v.alert_scadenze||[];
+    openModal(`<div class="modal" style="max-width:780px">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title">🚗 ${v.targa||targa}</div>
+          <div class="modal-sub">${v.marca||''} ${v.modello||''} · ${tipoLabel}</div>
+        </div>
+        <button class="modal-close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body" style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+        <!-- sx -->
+        <div>
+          ${alerts.length?`<div style="margin-bottom:12px">${alerts.map(a=>`<div class="alert alert-warn" style="padding:8px 12px;font-size:12px;margin-bottom:4px">⚠️ ${a.tipo}: <strong>${fmtDate(a.scadenza)}</strong> (${a.giorni} giorni)</div>`).join('')}</div>`:''}
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-bottom:8px">Dati contratto</div>
+          ${kv('Tipo contratto',tipoLabel)}
+          ${kv('Fornitore noleggio',v.fornitore_noleggio)}
+          ${kv('Canone mensile',euro(v.canone_mensile))}
+          ${kv('Km contratto',v.km_contratto?num(v.km_contratto)+' km':'')}
+          ${kv('Fine contratto',fmtDate(v.fine_contratto_noleggio))}
+          ${kv('Ded. IVA',(v.detraibilita_iva_pct||40)+'%')}
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-top:16px;margin-bottom:8px">Scadenze</div>
+          ${kv('Bollo',fmtDate(v.scadenza_bollo))}
+          ${kv('Revisione',fmtDate(v.scadenza_revisione))}
+          ${kv('Assicurazione',fmtDate(v.scadenza_assicurazione))}
+          ${v.note?`<div style="margin-top:12px;padding:10px;background:var(--surface2);border-radius:6px;font-size:12px;color:var(--text2)">${v.note}</div>`:''}
+        </div>
+        <!-- dx -->
+        <div>
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-bottom:8px">Ultime fatture (${fatture.length})</div>
+          ${fatture.length?`<div style="max-height:200px;overflow-y:auto;margin-bottom:16px">
+            <table style="font-size:12px;width:100%">
+              <thead><tr style="position:sticky;top:0;background:var(--surface)"><th>Data</th><th>N°</th><th style="text-align:right">Totale</th><th>Stato</th></tr></thead>
+              <tbody>${fatture.map(f=>`<tr>
+                <td style="white-space:nowrap">${fmtDate(f.data_fattura)}</td>
+                <td class="font-mono" style="font-size:11px">${f.numero_fattura||'–'}</td>
+                <td style="text-align:right;font-weight:700">${euro(f.importo_totale)}</td>
+                <td>${badge(f.stato||'importato')}</td>
+              </tr>`).join('')}</tbody>
+            </table></div>`:
+            `<div style="color:var(--text3);font-size:12px;margin-bottom:16px">Nessuna fattura collegata</div>`}
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-bottom:8px">Verbali (${verbali.length})</div>
+          ${verbali.length?`<div style="max-height:160px;overflow-y:auto">
+            <table style="font-size:12px;width:100%">
+              <thead><tr style="position:sticky;top:0;background:var(--surface)"><th>Data</th><th>N°</th><th style="text-align:right">Importo</th><th>Stato</th></tr></thead>
+              <tbody>${verbali.map(vb=>`<tr>
+                <td style="white-space:nowrap">${fmtDate(vb.data_verbale)}</td>
+                <td class="font-mono" style="font-size:11px">${vb.numero_verbale||'–'}</td>
+                <td style="text-align:right;font-weight:700;color:var(--red)">${euro(vb.importo_da_pagare||vb.importo_originale)}</td>
+                <td>${badge(vb.stato||'da_pagare')}</td>
+              </tr>`).join('')}</tbody>
+            </table></div>`:
+            `<div style="color:var(--text3);font-size:12px">Nessun verbale</div>`}
+        </div>
+      </div>
+      <div class="modal-foot"><button class="btn btn-primary" onclick="closeModal()">Chiudi</button></div>
+    </div>`);
+  }catch(e){err('Errore caricamento veicolo: '+e.message);}
+}
 
 /* ═══════════════════════════════════════════════════════
    PAGE: VERBALI
 ═══════════════════════════════════════════════════════ */
 PAGES['verbali']=async function(){
-  $('tb-actions').innerHTML=`<button id="btn-upload-verbale" class="btn btn-primary btn-sm" onclick="modalUploadVerbale()">📥 Carica PDF verbale</button>`;
-  $('content').innerHTML=`<div id="vrb-body">${loading()}</div>`;
-  loadVerbali();
-};
-async function loadVerbali(){
-  const el=$('vrb-body'); if(!el)return;
-  try{
-    const data=await GET('/api/verbali?limit=200');
-    const list=data?.verbali||data||[];
-    const dp=list.filter(v=>v.stato==='da_pagare').length;
-    const totDaPagare=list.filter(v=>v.stato==='da_pagare').reduce((s,v)=>s+(v.importo_da_pagare||v.importo_ridotto||v.importo_originale||0),0);
-    el.innerHTML=`
-      ${dp>0?`<div class="alert alert-warn mb-4" style="justify-content:space-between">
-        <span>⚠️ ${dp} verbali da pagare</span>
-        <strong>${euro(totDaPagare)}</strong>
-      </div>`:''}
-      <div class="tbl-wrap">
-        <table><thead><tr><th>N° Verbale</th><th>Data</th><th>Targa</th><th>Ente / Luogo</th><th>Imp. originale</th><th>Da pagare</th><th>Scadenza</th><th>Stato</th><th></th></tr></thead>
-        <tbody>${list.length===0?`<tr><td colspan="9">${emptyState('📋','Nessun verbale')}</td></tr>`:list.map(v=>`<tr>
-          <td class="font-mono" style="font-size:11px">${v.numero_verbale||'–'}</td>
-          <td>${fmtDate(v.data_verbale)}</td>
-          <td style="font-weight:700">${v.targa||'–'}</td>
-          <td style="max-width:180px;font-size:12px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${v.ente_emittente||v.luogo_infrazione||'–'}</div></td>
-          <td>${euro(v.importo_originale)}</td>
-          <td style="font-weight:700;color:var(--red)">${euro(v.importo_da_pagare||v.importo_ridotto||v.importo_originale)}</td>
-          <td>${fmtDate(v.scadenza_pagamento)}</td>
-          <td>${badge(v.stato||'da_pagare')}</td>
-          <td style="text-align:right;white-space:nowrap">
-            ${v.stato==='da_pagare'?`<button class="btn btn-success btn-xs" onclick="modalPagaVerbale('${v._id}',${v.importo_da_pagare||v.importo_originale||0})">Paga</button> <button class="btn btn-ghost btn-xs" onclick="ricorsoVerbale('${v._id}')">Ricorso</button>`:''}
-          </td>
-        </tr>`).join('')}</tbody></table></div>`;
-  }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
-}
-function modalUploadVerbale(){
-  openModal(`<div class="modal">
-    <div class="modal-head"><div class="modal-title">Carica Verbale PDF</div><button class="modal-close" onclick="closeModal()">×</button></div>
-    <div class="modal-body">
-      <div class="drop" onclick="$('vrb-f').click()">
-        <span class="drop-icon">📋</span><div class="drop-label">PDF verbale</div><div class="drop-sub">Parsing AI automatico</div>
-        <input id="vrb-f" type="file" accept=".pdf" style="display:none" onchange="uploadVerbale(this)">
-      </div>
-    </div>
-    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Chiudi</button></div>
-  </div>`);
-}
-async function uploadVerbale(input){
-  const file=input.files[0]; if(!file)return;
-  warn('Parsing...');
-  try{const fd=new FormData();fd.append('file',file);await POST('/api/verbali/upload',fd,true);ok('Verbale caricato');closeModal();loadVerbali();}
-  catch(e){err(e.message);}
-}
-function modalPagaVerbale(id,importo){
-  openModal(`<div class="modal">
-    <div class="modal-head"><div class="modal-title">Paga Verbale</div><button class="modal-close" onclick="closeModal()">×</button></div>
-    <div class="modal-body">
-      <div class="field-row">
-        <div class="field"><label>Data pagamento</label><input id="pv-data" type="date" class="inp" value="${today()}"></div>
-        <div class="field"><label>Importo €</label><input id="pv-imp" type="number" step="0.01" class="inp" value="${importo}"></div>
-        <div class="field"><label>Metodo</label><select id="pv-met" class="inp"><option value="cassa">Cassa</option><option value="banca">Bonifico</option><option value="assegno">Assegno</option></select></div>
-        <div class="field"><label>Note</label><input id="pv-note" class="inp"></div>
-      </div>
-    </div>
-    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Annulla</button><button class="btn btn-success" onclick="pagaVerbale('${id}')">✓ Paga</button></div>
-  </div>`);
-}
-async function pagaVerbale(id){
-  try{await POST(`/api/verbali/${id}/paga`,{data_pagamento:$('pv-data').value,importo:+$('pv-imp').value,metodo:$('pv-met').value,note:$('pv-note').value});ok('Verbale pagato');closeModal();loadVerbali();}
-  catch(e){err(e.message);}
-}
-async function ricorsoVerbale(id){
-  try{await PUT(`/api/verbali/${id}/ricorso`,{});ok('Stato aggiornato → ricorso');loadVerbali();}catch(e){err(e.message);}
-}
-
-/* ═══════════════════════════════════════════════════════
-   PAGE: PEC / GMAIL
-═══════════════════════════════════════════════════════ */
-PAGES['pec']=async function(){
-  $('content').innerHTML=`
-    <div class="tabs" id="pec-tabs">
-      <div class="tab active" data-t="pec" onclick="switchPec('pec',this)">📨 PEC Aruba</div>
-      <div class="tab" data-t="gmail" onclick="switchPec('gmail',this)">📧 Gmail</div>
-      <div class="tab" data-t="inbox" onclick="switchPec('inbox',this)">📥 Documenti Inbox</div>
-    </div>
-    <div id="pec-body">${loading()}</div>`;
-  switchPec('pec');
-};
-async function switchPec(tipo,btn){
-  if(btn){qsa('#pec-tabs .tab').forEach(t=>t.classList.toggle('active',t.dataset.t===tipo));}
-  const el=$('pec-body'); if(!el)return;
-  if(tipo==='inbox'){
-    el.innerHTML=loading();
-    try{
-      // Prova sia PEC inbox che Gmail documents_inbox
-      const [pecData, gmailData] = await Promise.allSettled([
-        GET('/api/pec/inbox?limit=100'),
-        GET('/api/cedolini/documenti?limit=100')
-      ]);
-      const pecList  = (pecData.status==='fulfilled'  ? (pecData.value?.inbox||pecData.value||[])   : []);
-      const gmailList= (gmailData.status==='fulfilled' ? (gmailData.value?.documenti||gmailData.value||[]) : []);
-      const list = [...pecList, ...gmailList].sort((a,b)=>(b.data_ricezione||'')>(a.data_ricezione||'')?1:-1);
-      el.innerHTML=`
-        <div style="font-size:12px;color:var(--text3);margin-bottom:12px">PEC: ${pecList.length} · Gmail: ${gmailList.length} documenti</div>
-        <div class="tbl-wrap">
-          <table><thead><tr><th>Data</th><th>Fonte</th><th>Oggetto / Subject</th><th>Mittente</th><th>Categoria</th><th>Stato</th></tr></thead>
-          <tbody>${list.length===0?`<tr><td colspan="6">${emptyState('📥','Inbox vuota','Sincronizza PEC o Gmail per importare documenti')}</td></tr>`:list.map(d=>`<tr>
-            <td>${fmtDate(d.data_ricezione)}</td>
-            <td>${d.da?'<span class="badge badge-blue">PEC</span>':'<span class="badge badge-gray">Gmail</span>'}</td>
-            <td style="font-weight:600;max-width:240px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${d.oggetto||d.subject||'–'}</div></td>
-            <td style="font-size:11px;max-width:160px"><div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${d.da||d.mittente||'–'}</div></td>
-            <td>${badge(d.categoria||d.tipo||'altro')}</td>
-            <td>${badge(d.stato||'importato')}</td>
-          </tr>`).join('')}</tbody></table>
-        </div>`;
-    }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
-    return;
-  }
-  el.innerHTML=`<div class="card card-body" style="max-width:560px">
-    <div style="font-size:15px;font-weight:700;margin-bottom:6px">${tipo==='pec'?'📨 PEC Aruba':'📧 Gmail'}</div>
-    <div style="font-size:13px;color:var(--text3);margin-bottom:20px">Sincronizza ${tipo==='pec'?'fatturazioneceraldi@pec.it':'ceraldigroupsrl@gmail.com'} per importare documenti.</div>
-    <div class="flex gap-3 flex-wrap">
-      <button class="btn btn-primary btn-sm" onclick="runSync('${tipo}',7)">🔍 Sync 7 giorni</button>
-      <button class="btn btn-ghost btn-sm" onclick="runSync('${tipo}',30)">📅 Sync 30 giorni</button>
-    </div>
-    <div id="sync-res" class="hidden mt-4"></div>
-  </div>`;
-}
-async function runSync(tipo,g){
-  const ep=tipo==='pec'?'/api/pec/sync':'/api/cedolini/gmail-scan';
-  const el=$('sync-res'); if(!el)return;
-  el.classList.remove('hidden');
-  el.innerHTML=`<div class="flex items-center gap-3"><div class="spinner"></div><span style="font-size:13px">Sincronizzazione...</span></div>`;
-  try{
-    const r=await POST(ep,{giorni_indietro:g});
-    const n=r?.nuove||r?.trovati||r?.elaborate||r?.elaborati||r?.processati||0;
-    el.innerHTML=`<div class="alert alert-success">✓ Completato · ${n} documenti importati</div>`;
-    ok('Sync completata');
-    // Aggiorna badge inbox
-    loadScadBadge();
-  }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;err(e.message);}
-}
-
-/* ═══════════════════════════════════════════════════════
-   INIT
-═══════════════════════════════════════════════════════ */
-checkAuth();
-</script>
-
-</body>
-</html>
+  $('tb-actions').i
