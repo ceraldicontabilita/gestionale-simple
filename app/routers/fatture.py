@@ -152,6 +152,37 @@ async def lista_fatture(
             d["fornitore_nome"] = forn_map.get(d.get("fornitore_piva", ""), "")
         risultato.append(_ser(d))
 
+    # Per le fatture ancora senza nome, cerca in altre fatture dello stesso fornitore (self-healing)
+    pive_senza_nome = list({
+        d.get("fornitore_piva", "")
+        for d in risultato
+        if not (d.get("fornitore_nome") or "").strip() and d.get("fornitore_piva")
+    })
+    if pive_senza_nome:
+        nomi_rows = await col_invoices().aggregate([
+            {"$match": {"fornitore_piva": {"$in": pive_senza_nome},
+                        "fornitore_nome": {"$nin": [None, ""]}}},
+            {"$group": {"_id": "$fornitore_piva", "nome": {"$first": "$fornitore_nome"}}},
+        ]).to_list(length=None)
+        nomi_map = {r["_id"]: r["nome"] for r in nomi_rows}
+        for d in risultato:
+            if not (d.get("fornitore_nome") or "").strip():
+                nome = nomi_map.get(d.get("fornitore_piva", ""), "")
+                if nome:
+                    d["fornitore_nome"] = nome
+                    await col_invoices().update_one(
+                        {"_id": d["_id"]}, {"$set": {"fornitore_nome": nome}}
+                    )
+                    piva = d.get("fornitore_piva", "")
+                    if piva and not forn_map.get(piva, ""):
+                        await col_fornitori().update_one(
+                            {"partita_iva": piva, "$or": [
+                                {"ragione_sociale": {"$in": [None, ""]}},
+                                {"ragione_sociale": {"$exists": False}},
+                            ]},
+                            {"$set": {"ragione_sociale": nome}},
+                        )
+
     # KPI aggregati
     kpi_pipe = [{"$match": filtro}, {"$group": {
         "_id":        None,
