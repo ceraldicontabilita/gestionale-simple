@@ -146,17 +146,19 @@ async def lista_fatture(
         for f in all_forn if f.get("partita_iva")
     }
 
-    risultato = []
+    # ── Risolvi fornitore_nome: 3 livelli di fallback ─────────────────────────
+    # L1: forn_map da anagrafica fornitori
     for d in docs:
-        if not d.get("fornitore_nome"):
-            d["fornitore_nome"] = forn_map.get(d.get("fornitore_piva", ""), "")
-        risultato.append(_ser(d))
+        if not (d.get("fornitore_nome") or "").strip():
+            nome_forn = forn_map.get(d.get("fornitore_piva", ""), "")
+            if nome_forn:
+                d["fornitore_nome"] = nome_forn
 
-    # Per le fatture ancora senza nome, cerca in altre fatture dello stesso fornitore (self-healing)
+    # L2: cross-invoice stesso fornitore_piva
     pive_senza_nome = list({
         d.get("fornitore_piva", "")
-        for d in risultato
-        if not (d.get("fornitore_nome") or "").strip() and d.get("fornitore_piva")
+        for d in docs
+        if not (d.get("fornitore_nome") or "").strip() and (d.get("fornitore_piva") or "").strip()
     })
     if pive_senza_nome:
         nomi_rows = await col_invoices().aggregate([
@@ -165,23 +167,50 @@ async def lista_fatture(
             {"$group": {"_id": "$fornitore_piva", "nome": {"$first": "$fornitore_nome"}}},
         ]).to_list(length=None)
         nomi_map = {r["_id"]: r["nome"] for r in nomi_rows}
-        for d in risultato:
+        for d in docs:
             if not (d.get("fornitore_nome") or "").strip():
                 nome = nomi_map.get(d.get("fornitore_piva", ""), "")
                 if nome:
                     d["fornitore_nome"] = nome
-                    await col_invoices().update_one(
-                        {"_id": d["_id"]}, {"$set": {"fornitore_nome": nome}}
-                    )
-                    piva = d.get("fornitore_piva", "")
-                    if piva and not forn_map.get(piva, ""):
-                        await col_fornitori().update_one(
-                            {"partita_iva": piva, "$or": [
-                                {"ragione_sociale": {"$in": [None, ""]}},
-                                {"ragione_sociale": {"$exists": False}},
-                            ]},
-                            {"$set": {"ragione_sociale": nome}},
-                        )
+
+    # L3: re-parsing raw_xml (ultima risorsa)
+    from app.services.xml_parser import parse_fattura_xml
+    ids_da_aggiornare: list[tuple] = []  # (id, fornitore_nome, fornitore_piva)
+    for d in docs:
+        if (d.get("fornitore_nome") or "").strip():
+            continue
+        raw = d.get("raw_xml") or ""
+        if not raw:
+            continue
+        try:
+            parsed = parse_fattura_xml(raw.encode("utf-8", errors="replace"))
+            nome = (parsed.get("fornitore_nome") or "").strip()
+            piva = (parsed.get("fornitore_piva") or d.get("fornitore_piva") or "").strip()
+        except Exception:
+            continue
+        if nome:
+            d["fornitore_nome"] = nome
+            if piva and not (d.get("fornitore_piva") or "").strip():
+                d["fornitore_piva"] = piva
+            ids_da_aggiornare.append((d["_id"], nome, piva or d.get("fornitore_piva", "")))
+
+    # Persisti i nomi recuperati (in background, non blocca la risposta)
+    for _id, nome, piva in ids_da_aggiornare:
+        upd: dict = {"fornitore_nome": nome}
+        if piva:
+            upd["fornitore_piva"] = piva
+        await col_invoices().update_one({"_id": _id}, {"$set": upd})
+        if piva and not forn_map.get(piva, ""):
+            await col_fornitori().update_one(
+                {"partita_iva": piva, "$or": [
+                    {"ragione_sociale": {"$in": [None, ""]}},
+                    {"ragione_sociale": {"$exists": False}},
+                ]},
+                {"$set": {"ragione_sociale": nome}},
+            )
+
+    # Serializza escludendo raw_xml (può essere centinaia di KB per fattura)
+    risultato = [_ser({k: v for k, v in d.items() if k != "raw_xml"}) for d in docs]
 
     # KPI aggregati
     kpi_pipe = [{"$match": filtro}, {"$group": {
