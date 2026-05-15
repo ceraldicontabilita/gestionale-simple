@@ -9,6 +9,16 @@
 - Metodo pagamento: SEMPRE dall'anagrafica fornitore (`fornitori` collection), MAI dall'XML
 - Collections chiave: `invoices`, `fornitori`, `prima_nota_cassa`, `prima_nota_banca`, `prima_nota_provvisori`, `estratto_conto`, `corrispettivi`, `f24_commercialista`
 
+## Fonti Dati — Regola Assoluta
+- NON usare `ceraldi_erp_clean_state` come fonte dati. Non esiste in produzione.
+- Ogni pagina legge ESCLUSIVAMENTE dalle collection reali del DB "Gestionale":
+  - Fornitori → collection `fornitori`; conteggio fatture da `invoices`
+  - Corrispettivi → collection `corrispettivi`; mostrare `contanti`, `elettronico`/`pos_dichiarato`, `totale`, `totale_iva`
+  - Prima Nota → `prima_nota_cassa`, `prima_nota_banca`, `prima_nota_provvisori`
+  - Fatture → `invoices`
+- Mappare i campi reali del DB verso la UI — mai inventare dati demo, seed, o localStorage.
+- Mai sovrascrivere MongoDB con dati demo o di test.
+
 ## Bug Fixing Approach
 - SEMPRE trovare e fixare la root cause, non i sintomi. Traccia il flusso dati completo: parser → MongoDB → API → frontend prima di toccare il codice.
 - I fix devono essere automatici e trasparenti — mai aggiungere bottoni "Fix dati", pagine admin di repair, o script di migrazione da cliccare manualmente.
