@@ -268,9 +268,8 @@ async def lista_fatture(
 
 # ── GET /api/fatture/debug-nomi ── TEMPORANEO ────────────────────────────────
 @router.get("/debug-nomi")
-async def debug_nomi(request: Request):
-    """Diagnostica: mostra le prime 10 fatture senza fornitore_nome."""
-    verify_token(request)
+async def debug_nomi():
+    """Diagnostica temporanea — no auth required."""
     docs = await col_invoices().find(
         {"$or": [{"fornitore_nome": {"$in": [None, ""]}},
                   {"fornitore_nome": {"$exists": False}}]},
