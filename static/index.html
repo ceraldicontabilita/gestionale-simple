@@ -1056,35 +1056,43 @@ async function loadFornitori(){
     const list=data?.fornitori||data||[];
     if(!list.length){el.innerHTML=`<div class="card">${emptyState('🏢','Nessun fornitore trovato')}</div>`;return;}
     const anno=new Date().getFullYear();
+    const senzaNome=list.filter(f=>!(f.ragione_sociale||'').trim()).length;
     el.innerHTML=`<div class="tbl-wrap">
-      <div class="tbl-summary"><span>${list.length} fornitori</span></div>
+      <div class="tbl-summary">
+        <span>${list.length} fornitori</span>
+        ${senzaNome?`<span style="color:var(--red);font-size:12px;margin-left:12px">⚠ ${senzaNome} senza nome</span>`:''}
+      </div>
       <table><thead><tr>
         <th>Denominazione</th>
         <th>P.IVA</th>
-        <th>Metodo Pag.</th>
+        <th>Metodo Pagamento</th>
         <th>IBAN</th>
-        <th>Categoria IVA</th>
-        <th>Ded. %</th>
-        <th>Fatt. ${anno}</th>
-        <th>Totale ${anno}</th>
-        <th></th>
+        <th>Cat. IVA / Ded.</th>
+        <th style="text-align:center">Fatt. ${anno}</th>
+        <th style="text-align:right">Totale ${anno}</th>
       </tr></thead>
-      <tbody>${list.map(f=>`<tr style="cursor:pointer" onclick="openFornitore('${f.partita_iva||f._id}')">
-        <td style="font-weight:600;max-width:220px">
-          <div style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${f.ragione_sociale||'–'}</div>
-          ${f.email?`<div style="font-size:11px;color:var(--text3)">${f.email}</div>`:''}
-        </td>
-        <td class="font-mono" style="font-size:12px">${f.partita_iva||'–'}</td>
-        <td style="font-size:12px">${f.metodo_pagamento?`<span style="background:var(--indigo-light);color:var(--indigo);padding:2px 7px;border-radius:5px;font-size:11px;font-weight:600">${metodoLabel(f.metodo_pagamento)}</span>`:'<span style="color:var(--red);font-size:11px;font-weight:600">⚠ mancante</span>'}</td>
-        <td class="font-mono" style="font-size:11px;color:var(--text3)">${f.iban?f.iban.substring(0,22)+'…':'–'}</td>
-        <td>${f.categoria_iva?badge(f.categoria_iva):'–'}</td>
-        <td style="font-weight:700;color:${f.detraibilita_default_pct>0&&f.detraibilita_default_pct<100?'var(--orange)':'var(--text)'}">${f.detraibilita_default_pct!=null?f.detraibilita_default_pct+'%':'–'}</td>
-        <td style="text-align:center;font-weight:600">${f.fatture_anno||0}</td>
-        <td style="font-weight:700;color:var(--indigo)">${f.totale_fatturato?euro(f.totale_fatturato):'–'}</td>
-        <td style="text-align:right;white-space:nowrap" onclick="event.stopPropagation()">
-          <button class="btn btn-ghost btn-xs" onclick="runAiClassifica('${f.partita_iva||f._id}')">🤖</button>
-        </td>
-      </tr>`).join('')}</tbody></table></div>`;
+      <tbody>${list.map(f=>{
+        const hasNome=(f.ragione_sociale||'').trim();
+        const nomeEl=hasNome
+          ?`<div style="font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:240px">${f.ragione_sociale}</div>`
+          :`<div style="font-style:italic;color:var(--text3);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:240px">${f.partita_iva||f.codice_fiscale||'(nome mancante)'}</div>`;
+        const metEl=f.metodo_pagamento
+          ?`<span style="background:var(--indigo-light);color:var(--indigo);padding:2px 8px;border-radius:5px;font-size:11px;font-weight:600">${metodoLabel(f.metodo_pagamento)}</span>`
+          :`<span style="color:var(--red);font-size:11px;font-weight:600">⚠ mancante</span>`;
+        const dedPct=f.detraibilita_default_pct??100;
+        const catEl=f.categoria_iva
+          ?`${badge(f.categoria_iva)} <span style="color:${dedPct<100?'var(--orange)':'var(--text3)'};font-size:11px">${dedPct}%</span>`
+          :`<span style="color:var(--text3);font-size:12px">${dedPct}%</span>`;
+        return `<tr style="cursor:pointer" onclick="openFornitore('${f.partita_iva||f._id}')">
+          <td>${nomeEl}${f.email?`<div style="font-size:11px;color:var(--text3);margin-top:1px">${f.email}</div>`:''}</td>
+          <td class="font-mono" style="font-size:12px">${f.partita_iva||'–'}</td>
+          <td>${metEl}</td>
+          <td class="font-mono" style="font-size:11px;color:var(--text3)">${f.iban?f.iban.substring(0,20)+'…':'–'}</td>
+          <td>${catEl}</td>
+          <td style="text-align:center;font-weight:600">${f.fatture_anno||0}</td>
+          <td style="text-align:right;font-weight:700;color:${f.totale_fatturato>0?'var(--indigo)':'var(--text3)'}">${f.totale_fatturato>0?euro(f.totale_fatturato):'–'}</td>
+        </tr>`;
+      }).join('')}</tbody></table></div>`;
   }catch(e){el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`;}
 }
 
