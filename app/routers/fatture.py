@@ -121,7 +121,10 @@ async def lista_fatture(
 ):
     verify_token(request)
 
-    filtro: dict = {"deleted_at": {"$exists": False}}
+    filtro: dict = {
+        "deleted_at":    {"$exists": False},
+        "numero_fattura": {"$nin": [None, ""]},
+    }
     if anno:           filtro["anno"]           = anno
     if stato:          filtro["stato"]          = stato
     if fornitore_piva: filtro["fornitore_piva"] = fornitore_piva
@@ -264,52 +267,6 @@ async def lista_fatture(
             "iva_detr":   round(kpi.get("iva_detr", 0), 2),
         },
     }
-
-
-# ── GET /api/fatture/debug-nomi ── TEMPORANEO ────────────────────────────────
-@router.get("/debug-nomi")
-async def debug_nomi():
-    """Diagnostica temporanea — no auth required."""
-    from app.services.xml_parser import parse_fattura_xml
-
-    # Fatture reali (con numero_fattura) ma senza fornitore_nome
-    docs = await col_invoices().find(
-        {"$and": [
-            {"$or": [{"fornitore_nome": {"$in": [None, ""]}}, {"fornitore_nome": {"$exists": False}}]},
-            {"numero_fattura": {"$nin": [None, ""]}},
-        ]},
-    ).sort("data_fattura", -1).limit(10).to_list(length=10)
-
-    result = []
-    for d in docs:
-        raw = (d.get("raw_xml") or "")
-        # Prova a re-parsare per vedere cosa produce
-        reparsed_nome = ""
-        reparsed_piva = ""
-        parse_error = ""
-        if raw:
-            try:
-                p = parse_fattura_xml(raw.encode("utf-8", errors="replace"))
-                reparsed_nome = p.get("fornitore_nome", "")
-                reparsed_piva = p.get("fornitore_piva", "")
-            except Exception as e:
-                parse_error = str(e)
-
-        result.append({
-            "_id":              str(d.get("_id", "")),
-            "numero_fattura":   d.get("numero_fattura", ""),
-            "data_fattura":     d.get("data_fattura", ""),
-            "fornitore_nome_db": d.get("fornitore_nome", ""),
-            "fornitore_piva_db": d.get("fornitore_piva", ""),
-            "has_raw_xml":      bool(raw),
-            "raw_xml_chars":    len(raw),
-            "reparsed_nome":    reparsed_nome,
-            "reparsed_piva":    reparsed_piva,
-            "parse_error":      parse_error,
-            "raw_xml_start":    raw[:400] if raw else "",
-        })
-    return {"count": len(result), "reali_senza_nome": result}
-
 
 # ── GET /api/fatture/scadenzario ──────────────────────────────────────────────
 
